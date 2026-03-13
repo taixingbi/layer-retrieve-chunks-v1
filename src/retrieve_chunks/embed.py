@@ -1,7 +1,11 @@
 """Generate embeddings via local v1/embeddings API."""
 import httpx
 
-from config import EMBEDDING_MODEL, EMBEDDING_URL, VECTOR_SIZE
+from retrieve_chunks.config import (
+    VECTOR_SIZE,
+    get_embedding_model,
+    get_embedding_url,
+)
 
 _http_client: httpx.Client | None = None
 
@@ -23,8 +27,8 @@ def embed_texts(texts: list[str]) -> list[list[float]]:
     if not texts:
         return []
 
-    url = f"{EMBEDDING_URL.rstrip('/')}/v1/embeddings"
-    model = EMBEDDING_MODEL or "BAAI/bge-m3"
+    url = f"{get_embedding_url().rstrip('/')}/v1/embeddings"
+    model = get_embedding_model() or "BAAI/bge-m3"
     client = _get_client()
 
     payload = {"model": model, "input": texts if len(texts) > 1 else texts[0]}

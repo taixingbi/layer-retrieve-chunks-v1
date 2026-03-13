@@ -6,3 +6,6 @@ __pycache__/
 state.json
 data/*.json
 logs/*.log
+dist/
+*.egg-info/
+*.egg

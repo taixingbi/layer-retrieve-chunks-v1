@@ -2,36 +2,45 @@
 Hybrid query chunks: dense (vector) + BM25 + RRF fusion.
 """
 import re
-import time
 
-import structlog
-from pydantic import BaseModel
 from qdrant_client import QdrantClient
 from rank_bm25 import BM25Okapi
 
-from config import COLLECTION_NAME, QDRANT_API_KEY, QDRANT_URL, TOP_K_DENSE, RRF_K
-from embed import embed_text
+from retrieve_chunks.config import (
+    get_collection_name,
+    get_qdrant_api_key,
+    get_qdrant_url,
+    TOP_K_DENSE,
+    RRF_K,
+)
+from retrieve_chunks.embed import embed_text
 
 _TOKEN_RE = re.compile(r"\b\w+\b")
 
-
-class QueryRequest(BaseModel):
-    query: str
-    k: int = 10
-    collection: str | None = None
-
-
 _client: QdrantClient | None = None
+
+
+def _reset_client() -> None:
+    """Clear cached client (e.g. after configure())."""
+    global _client
+    _client = None
+
+
+def _make_client(url: str | None = None, api_key: str | None = None) -> QdrantClient:
+    """Create QdrantClient from url/api_key or config."""
+    u = url if url is not None else get_qdrant_url()
+    k = api_key if api_key is not None else get_qdrant_api_key()
+    return QdrantClient(
+        url=u,
+        api_key=k or None,
+        check_compatibility=False,
+    )
 
 
 def _get_client() -> QdrantClient:
     global _client
     if _client is None:
-        _client = QdrantClient(
-            url=QDRANT_URL,
-            api_key=QDRANT_API_KEY or None,
-            check_compatibility=False,
-        )
+        _client = _make_client()
     return _client
 
 
@@ -119,70 +128,64 @@ def _fuse_rrf(
 def query_chunks(
     query: str,
     k: int = 10,
-    collection_name: str = COLLECTION_NAME,
+    collection_name: str | None = None,
     *,
     top_k_dense: int = TOP_K_DENSE,
     rrf_k: int = RRF_K,
+    qdrant_url: str | None = None,
+    qdrant_api_key: str | None = None,
+    client: QdrantClient | None = None,
 ) -> list[dict]:
     """
     Hybrid retrieval: dense + BM25 + RRF fusion.
+
+    Args:
+        query: Search query text.
+        k: Number of chunks to return.
+        collection_name: Qdrant collection name.
+        top_k_dense: Dense recall size before RRF.
+        rrf_k: RRF constant.
+        qdrant_url: Override Qdrant URL (else env/config).
+        qdrant_api_key: Override Qdrant API key (else env/config).
+        client: Use this QdrantClient instead of creating one.
+
     1. Dense: embed query → Qdrant vector search → top_k_dense
     2. BM25: rank those hits with BM25
     3. RRF: fuse both rankings, return top k
     """
-    log = structlog.get_logger()
-    log.info("query_start", query=query, k=k, collection=collection_name)
-
-    start = time.perf_counter()
-    try:
+    if client is not None:
+        pass
+    elif qdrant_url is not None or qdrant_api_key is not None:
+        client = _make_client(url=qdrant_url, api_key=qdrant_api_key)
+    else:
         client = _get_client()
 
-        # Run dense search
-        dense_hits = _search_dense(client, query, collection_name, k=top_k_dense)
-        if not dense_hits:
-            log.info("query_complete", query=query, k=k, latency_ms=0, num_results=0)
-            return []
+    coll = collection_name if collection_name is not None else get_collection_name()
 
-        # BM25 over dense candidates (adds bm25_rank, bm25_score to each)
-        _search_bm25(query, dense_hits)
+    # Run dense search
+    dense_hits = _search_dense(client, query, coll, k=top_k_dense)
+    if not dense_hits:
+        return []
 
-        # RRF fuse: each doc contributes from dense_rank and bm25_rank
-        merged = _fuse_rrf(dense_hits, dense_hits, k_final=k, rrf_k=rrf_k)
+    # BM25 over dense candidates (adds bm25_rank, bm25_score to each)
+    _search_bm25(query, dense_hits)
 
-        result = [
-            {
-                "rank": rank,
-                "chunk_id": h.get("chunk_id", ""),
-                "score": h.get("rrf_score", 0.0),
-                "text": h.get("text", ""),
-                "source": h.get("source_file", h.get("source", "")),
-                "metadata": h.get("metadata", {}),
-                "scores": {
-                    "rrf_score": h.get("rrf_score", 0.0),
-                    "dense_score": h.get("dense_score", 0.0),
-                    "bm25_score": h.get("bm25_score", 0.0),
-                },
-            }
-            for rank, h in enumerate(merged, start=1)
-        ]
+    # RRF fuse: each doc contributes from dense_rank and bm25_rank
+    merged = _fuse_rrf(dense_hits, dense_hits, k_final=k, rrf_k=rrf_k)
 
-        latency_ms = round((time.perf_counter() - start) * 1000, 2)
-        log.info(
-            "query_complete",
-            query=query,
-            k=k,
-            latency_ms=latency_ms,
-            num_results=len(result),
-        )
-        return result
-    except Exception as e:
-        latency_ms = round((time.perf_counter() - start) * 1000, 2)
-        log.error(
-            "query_error",
-            query=query,
-            k=k,
-            latency_ms=latency_ms,
-            error=str(e),
-            exc_info=True,
-        )
-        raise
+    return [
+        {
+            "rank": rank,
+            "chunk_id": h.get("chunk_id", ""),
+            "score": h.get("rrf_score", 0.0),
+            "text": h.get("text", ""),
+            "source": h.get("source_file", h.get("source", "")),
+            "metadata": h.get("metadata", {}),
+            "scores": {
+                "rrf_score": h.get("rrf_score", 0.0),
+                "dense_score": h.get("dense_score", 0.0),
+                "bm25_score": h.get("bm25_score", 0.0),
+            },
+        }
+        for rank, h in enumerate(merged, start=1)
+    ]
