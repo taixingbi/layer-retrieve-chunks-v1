@@ -65,9 +65,21 @@ def get_embedding_url() -> str:
     )
 
 
-def get_collection_name() -> str:
-    """Collection name: override > env > default."""
+def get_env() -> str:
+    """Environment: override > env var > empty (no suffix)."""
+    return _overrides.get("env") or os.getenv("ENV", "")
+
+
+def get_collection_base() -> str:
+    """Collection base name (without env suffix)."""
     return _overrides.get("collection_name") or os.getenv("COLLECTION_NAME", "rag_dev")
+
+
+def get_collection_name(env_override: str | None = None) -> str:
+    """Collection name: base + '_' + env when env is set. env_override overrides for single call."""
+    base = get_collection_base()
+    env = env_override if env_override is not None else get_env()
+    return f"{base}_{env}" if env else base
 
 
 def get_embedding_model() -> str:
