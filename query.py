@@ -2,7 +2,9 @@
 Hybrid query chunks: dense (vector) + BM25 + RRF fusion.
 """
 import re
+import time
 
+import structlog
 from pydantic import BaseModel
 from qdrant_client import QdrantClient
 from rank_bm25 import BM25Okapi
@@ -128,32 +130,59 @@ def query_chunks(
     2. BM25: rank those hits with BM25
     3. RRF: fuse both rankings, return top k
     """
-    client = _get_client()
+    log = structlog.get_logger()
+    log.info("query_start", query=query, k=k, collection=collection_name)
 
-    # Run dense search
-    dense_hits = _search_dense(client, query, collection_name, k=top_k_dense)
-    if not dense_hits:
-        return []
+    start = time.perf_counter()
+    try:
+        client = _get_client()
 
-    # BM25 over dense candidates (adds bm25_rank, bm25_score to each)
-    _search_bm25(query, dense_hits)
+        # Run dense search
+        dense_hits = _search_dense(client, query, collection_name, k=top_k_dense)
+        if not dense_hits:
+            log.info("query_complete", query=query, k=k, latency_ms=0, num_results=0)
+            return []
 
-    # RRF fuse: each doc contributes from dense_rank and bm25_rank
-    merged = _fuse_rrf(dense_hits, dense_hits, k_final=k, rrf_k=rrf_k)
+        # BM25 over dense candidates (adds bm25_rank, bm25_score to each)
+        _search_bm25(query, dense_hits)
 
-    return [
-        {
-            "rank": rank,
-            "chunk_id": h.get("chunk_id", ""),
-            "score": h.get("rrf_score", 0.0),
-            "text": h.get("text", ""),
-            "source": h.get("source_file", h.get("source", "")),
-            "metadata": h.get("metadata", {}),
-            "scores": {
-                "rrf_score": h.get("rrf_score", 0.0),
-                "dense_score": h.get("dense_score", 0.0),
-                "bm25_score": h.get("bm25_score", 0.0),
-            },
-        }
-        for rank, h in enumerate(merged, start=1)
-    ]
+        # RRF fuse: each doc contributes from dense_rank and bm25_rank
+        merged = _fuse_rrf(dense_hits, dense_hits, k_final=k, rrf_k=rrf_k)
+
+        result = [
+            {
+                "rank": rank,
+                "chunk_id": h.get("chunk_id", ""),
+                "score": h.get("rrf_score", 0.0),
+                "text": h.get("text", ""),
+                "source": h.get("source_file", h.get("source", "")),
+                "metadata": h.get("metadata", {}),
+                "scores": {
+                    "rrf_score": h.get("rrf_score", 0.0),
+                    "dense_score": h.get("dense_score", 0.0),
+                    "bm25_score": h.get("bm25_score", 0.0),
+                },
+            }
+            for rank, h in enumerate(merged, start=1)
+        ]
+
+        latency_ms = round((time.perf_counter() - start) * 1000, 2)
+        log.info(
+            "query_complete",
+            query=query,
+            k=k,
+            latency_ms=latency_ms,
+            num_results=len(result),
+        )
+        return result
+    except Exception as e:
+        latency_ms = round((time.perf_counter() - start) * 1000, 2)
+        log.error(
+            "query_error",
+            query=query,
+            k=k,
+            latency_ms=latency_ms,
+            error=str(e),
+            exc_info=True,
+        )
+        raise

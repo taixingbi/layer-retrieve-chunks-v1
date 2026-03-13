@@ -1,0 +1,45 @@
+services:
+  loki:
+    image: grafana/loki:3.6.0
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./loki-config.yml:/etc/loki/config.yaml
+    command: -config.file=/etc/loki/config.yaml
+
+  promtail:
+    image: grafana/promtail:3.6.0
+    volumes:
+      - ./promtail-config.yml:/etc/promtail/config.yaml
+      - ./logs:/var/log/retrieve-chunks
+    command: -config.file=/etc/promtail/config.yaml
+    depends_on:
+      - loki
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_PATHS_PROVISIONING=/etc/grafana/provisioning
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources
+      - ./grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards
+      - ./grafana/dashboards:/var/lib/grafana/dashboards
+    depends_on:
+      - loki
+
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - LOG_JSON=true
+      - LOG_FILE=/app/logs/app.log
+    volumes:
+      - ./logs:/app/logs
+    depends_on:
+      - loki

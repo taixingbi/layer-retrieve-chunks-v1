@@ -1,6 +1,6 @@
 # RAG Query Chunks
 
-Hybrid retrieval: dense (vector) + BM25 + RRF fusion. HTTP POST API.
+Hybrid retrieval: dense (vector) + BM25 + RRF fusion. HTTP POST API. Structured logging for Grafana/Loki.
 
 ## Configuration
 
@@ -17,6 +17,9 @@ Create `.env`:
 | `TOP_K_DENSE`    | Dense recall size before RRF (default: 20) |
 | `RRF_K`          | RRF constant (default: 60)    |
 | `PORT`           | Server port (default: 8000)    |
+| `LOG_LEVEL`      | Log level (default: INFO)      |
+| `LOG_JSON`       | JSON logs for Loki (default: true) |
+| `LOG_FILE`       | Optional: write logs to file for Promtail |
 
 ## How to start
 
@@ -35,6 +38,31 @@ python main.py
 
 Server runs at http://localhost:8000. API docs: http://localhost:8000/docs. Health: `GET /health`.
 
+## Logging and Grafana stack
+
+The app emits structured JSON logs (query events, latency, errors). To view them in Grafana:
+
+```bash
+# 1. Create logs dir and run app with file logging (for Promtail)
+mkdir -p logs
+LOG_FILE=./logs/app.log python main.py
+
+# 2. In another terminal: start Grafana stack (Loki, Promtail, Grafana)
+docker-compose up loki promtail grafana -d
+
+# 3. Open Grafana: http://localhost:3000 (admin/admin)
+# 4. Explore → Loki → query: {job="retrieve-chunks"}
+# 5. Or open the "Retrieve Chunks Logs" dashboard
+```
+
+**Full Docker setup** (app + stack):
+
+```bash
+docker-compose up -d
+# App: http://localhost:8000
+# Grafana: http://localhost:3000
+```
+
 ## Usage
 
 **POST** `/query` with JSON body:
@@ -43,7 +71,8 @@ Server runs at http://localhost:8000. API docs: http://localhost:8000/docs. Heal
 |-------------|------|----------|-------------|
 | `query`    | str  | yes      | —           |
 | `k`        | int  | no       | 10          |
-| `collection` | str | no       | `COLLECTION_NAME` |
+| `collection` | str | no       | `COLLECTION_NAME` |docker-compose up -d
+
 
 Example:
 

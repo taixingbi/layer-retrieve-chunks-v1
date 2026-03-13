@@ -26,3 +26,8 @@ PORT = int(os.getenv("PORT", "8000"))
 
 # Vector size (BAAI/bge-m3 outputs 1024)
 VECTOR_SIZE = int(os.getenv("VECTOR_SIZE", "1024"))
+
+# Logging
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+LOG_JSON = os.getenv("LOG_JSON", "true").lower() in ("true", "1", "yes")
+LOG_FILE = os.getenv("LOG_FILE", "")  # When set, also write logs to file (for Promtail)
