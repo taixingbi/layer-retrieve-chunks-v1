@@ -3,7 +3,7 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "retrieve-chunks"
+name = "layer-rag-query"
 version = "1.0.0"
 description = "RAG hybrid retrieval: dense + BM25 + RRF fusion"
 readme = "README.md"
@@ -25,12 +25,18 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "httpx>=0.20.0",
     "rank-bm25>=0.2.2",
+    "tb-loki-central-logger>=0.1.5",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=7.0",
 ]
+mcp = [
+    "fastmcp>=2.0",
+    "fastapi>=0.100",
+    "uvicorn[standard]>=0.22",
+]
 
 [tool.setuptools.packages.find]
-where = ["src"]
+where = ["."]
