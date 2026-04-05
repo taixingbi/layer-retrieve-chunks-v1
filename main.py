@@ -7,6 +7,8 @@ Run: ``python main.py`` or ``fastmcp run main.py:mcp``
 """
 from __future__ import annotations
 
+from typing import Any
+
 import httpx
 from fastmcp import FastMCP
 from pydantic import BaseModel, Field, ValidationError
@@ -29,12 +31,12 @@ class AnswerFromInferenceBody(BaseModel):
     max_tokens: int | None = None
 
 
-def answer_from_inference_payload(body: AnswerFromInferenceBody) -> dict[str, str]:
+def answer_from_inference_payload(body: AnswerFromInferenceBody) -> dict[str, Any]:
     """Run RAG + chat; raise ``ValueError`` or ``httpx.HTTPStatusError`` on failure."""
     if body.k_max < body.k:
         raise ValueError("k_max must be >= k")
     with bind_request_context(body.request_id, body.session_id):
-        answer = complete_rag_answer(
+        answer, citations = complete_rag_answer(
             body.question,
             body.collection_base,
             body.request_id,
@@ -43,7 +45,7 @@ def answer_from_inference_payload(body: AnswerFromInferenceBody) -> dict[str, st
             k_max=body.k_max,
             max_tokens=body.max_tokens,
         )
-    return {"answer": answer}
+    return {"answer": answer, "citations": citations}
 
 
 mcp = FastMCP(
@@ -93,10 +95,10 @@ def answer_from_inference(
     k: int = 5,
     k_max: int = 40,
     max_tokens: int | None = None,
-) -> str:
-    """Retrieve chunks (retry with larger k up to k_max if the model returns empty or NOT_FOUND), then POST to INFERENCE_URL /v1/chat/completions."""
+) -> dict[str, Any]:
+    """Retrieve chunks (retry with larger k up to k_max if the model returns empty or NOT_FOUND), then POST to INFERENCE_URL /v1/chat/completions. ``citations`` lists only chunks referenced via [n] in ``answer``."""
     with bind_request_context(request_id, session_id):
-        return complete_rag_answer(
+        answer, citations = complete_rag_answer(
             question,
             collection_base,
             request_id,
@@ -105,6 +107,7 @@ def answer_from_inference(
             k_max=k_max,
             max_tokens=max_tokens,
         )
+    return {"answer": answer, "citations": citations}
 
 
 @mcp.custom_route("/v1/rag/query", methods=["POST"])

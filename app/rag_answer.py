@@ -14,7 +14,9 @@ else random UUIDs per run.
 from __future__ import annotations
 
 import argparse
+import json
 import os
+import re
 import sys
 import uuid
 
@@ -37,20 +39,59 @@ def _chat_http_client() -> httpx.Client:
     return _chat_http
 
 
-def _build_context(chunks: list[dict], max_chars: int = 12_000) -> str:
+def _build_numbered_context(
+    chunks: list[dict],
+    max_chars: int = 12_000,
+) -> tuple[str, list[dict]]:
+    """
+    Build context with passage numbers [1], [2], … for citations.
+
+    Returns (context string, citation list: cite_id, chunk_id, source, text full passage).
+    """
     parts: list[str] = []
+    citations: list[dict] = []
     size = 0
+    cite_id = 0
     for c in chunks:
         text = (c.get("text") or "").strip()
         if not text:
             continue
-        src = (c.get("source") or "").strip()
-        block = f"[{src}]\n{text}" if src else text
-        if size + len(block) > max_chars:
+        src = (c.get("source") or "").strip() or "(unknown source)"
+        cite_id += 1
+        block = f"[{cite_id}] {src}\n{text}"
+        if size + len(block) + 2 > max_chars:
             break
         parts.append(block)
+        citations.append(
+            {
+                "cite_id": cite_id,
+                "chunk_id": c.get("chunk_id", ""),
+                "source": src,
+                "text": text,
+            }
+        )
         size += len(block) + 2
-    return "\n\n".join(parts)
+    return "\n\n".join(parts), citations
+
+
+def _citations_used_in_answer(answer: str, citations: list[dict]) -> list[dict]:
+    """
+    Keep only passages the model cited via [n] in the answer (n must exist in ``citations``).
+
+    Ignores bracket numbers that are not valid ``cite_id``s (e.g. accidental matches).
+    Order follows first appearance in ``answer``.
+    """
+    if not citations or not answer:
+        return []
+    by_id = {c["cite_id"]: c for c in citations}
+    used: list[dict] = []
+    seen: set[int] = set()
+    for m in re.finditer(r"\[(\d+)\]", answer):
+        cid = int(m.group(1))
+        if cid in by_id and cid not in seen:
+            seen.add(cid)
+            used.append(by_id[cid])
+    return used
 
 
 def chat_complete(
@@ -100,10 +141,13 @@ def complete_rag_answer(
     k: int = 5,
     k_max: int = 40,
     max_tokens: int | None = None,
-) -> str:
+) -> tuple[str, list[dict]]:
     """
-    ``query_chunks`` → context string → ``POST .../v1/chat/completions``.
+    ``query_chunks`` → numbered context → ``POST .../v1/chat/completions``.
     Uses ``get_inference_url`` / ``get_inference_model`` / ``get_inference_max_tokens`` (from ``.env`` via ``app.config``).
+
+    Returns ``(answer, citations)`` where ``citations`` lists only passages the model
+    referenced with ``[n]`` in ``answer`` (each item: ``cite_id``, ``chunk_id``, ``source``, ``text``).
 
     If the model returns an empty string or exactly ``NOT_FOUND``, retries with larger ``k``
     (doubling capped by ``k_max``) until a substantive answer or ``k`` can no longer increase.
@@ -122,6 +166,9 @@ def complete_rag_answer(
         "role": "system",
         "content": (
             "You are a precise assistant. Answer ONLY from the provided context. "
+            "Each passage in the context starts with [n] SOURCE then the text; when a sentence "
+            "uses facts from passage n, end that sentence (or clause) with a citation like [n]. "
+            "You may cite multiple passages when needed, e.g. [1][2]. "
             "If the answer is not present in the context, reply with exactly: "
             f"\"{_NOT_FOUND_REPLY}\" and nothing else."
         ),
@@ -136,6 +183,7 @@ def complete_rag_answer(
         )
         current_k = k
         last_answer = ""
+        last_citations: list[dict] = []
         while True:
             chunks = query_chunks(
                 question,
@@ -147,7 +195,7 @@ def complete_rag_answer(
             if not chunks:
                 raise ValueError("No chunks retrieved for this query.")
 
-            context = _build_context(chunks)
+            context, last_citations = _build_numbered_context(chunks)
             messages = [
                 system_msg,
                 {
@@ -165,7 +213,7 @@ def complete_rag_answer(
             )
             if not _answer_needs_more_context(last_answer):
                 logger.info("complete_rag_answer done k_used=%s", current_k)
-                return last_answer
+                return last_answer, _citations_used_in_answer(last_answer, last_citations)
 
             next_k = min(current_k * 2, k_max)
             if next_k <= current_k:
@@ -173,7 +221,7 @@ def complete_rag_answer(
                     "complete_rag_answer done needs_more_context k_used=%s",
                     current_k,
                 )
-                return last_answer
+                return last_answer, _citations_used_in_answer(last_answer, last_citations)
             logger.info(
                 "complete_rag_answer retry larger k %s -> %s",
                 current_k,
@@ -211,7 +259,7 @@ def main(argv: list[str] | None = None) -> int:
     sid = os.environ.get("RAG_SESSION_ID") or str(uuid.uuid4())
 
     try:
-        answer = complete_rag_answer(
+        answer, citations = complete_rag_answer(
             args.question,
             args.collection,
             rid,
@@ -226,7 +274,8 @@ def main(argv: list[str] | None = None) -> int:
     except httpx.HTTPStatusError as e:
         print(e.response.text, file=sys.stderr)
         return 2
-    print(answer)
+    out = {"answer": answer, "citations": citations}
+    print(json.dumps(out, ensure_ascii=False, indent=2))
     return 0
 
 

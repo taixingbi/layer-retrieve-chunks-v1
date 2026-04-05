@@ -122,7 +122,7 @@ source .venv/bin/activate
 fastmcp run main.py:mcp --transport http --port 8000
 ```
 
-On **HTTP** transport, **MCP** clients use `http://127.0.0.1:8000/mcp` . The same process also serves **`POST http://127.0.0.1:8000/v1/rag/query`** (JSON body; response `{"answer":"..."}` ) for plain `curl` scripts.
+On **HTTP** transport, **MCP** clients use `http://127.0.0.1:8000/mcp` . The same process also serves **`POST http://127.0.0.1:8000/v1/rag/query`** (JSON body; response `{"answer":"...","citations":[{"cite_id":1,"chunk_id":"...","source":"...","text":"..."},...]}` ) for plain `curl` scripts.
 
 ```bash
 curl -sS -X POST http://127.0.0.1:8000/v1/rag/query \
@@ -137,7 +137,7 @@ curl -sS -X POST http://127.0.0.1:8000/v1/rag/query \
   }'
 ```
 
-Response: `{"answer":"..."}` . Optional body field: `"max_tokens": 512` .
+Response: `answer` is model text (with inline `[n]` citations); `citations` lists only passages actually cited in `answer` (`cite_id`, `chunk_id`, `source`, `text`). Optional body field: `"max_tokens": 512` .
 
 **Cursor** (`.cursor/mcp.json` or global MCP settings): point the server at the repo root so `.env` resolves; use your venv’s `python` if needed:
 
