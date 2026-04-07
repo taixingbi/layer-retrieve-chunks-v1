@@ -15,10 +15,11 @@ from pydantic import BaseModel, Field, ValidationError
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from app import embed_text as _embed_text
-from app import query_chunks as _query_chunks
+from app.asyncio_util import run_async
+from app.http.embed import embed_text as _embed_text_async
+from app.retrieval import query_chunks as _query_chunks_async
 from app.rag_answer import complete_rag_answer
-from app.request_context import bind_http_context, bind_request_context
+from app.request_context import bind_http_context
 
 
 class AnswerFromInferenceBody(BaseModel):
@@ -32,21 +33,22 @@ class AnswerFromInferenceBody(BaseModel):
     expand_on_not_found: bool = True
 
 
-def answer_from_inference_payload(body: AnswerFromInferenceBody) -> dict[str, Any]:
-    """Run RAG + chat; raise ``ValueError`` or ``httpx.HTTPStatusError`` on failure."""
+async def answer_from_inference_payload_async(
+    body: AnswerFromInferenceBody,
+) -> dict[str, Any]:
+    """Run RAG + chat (async). Raise ``ValueError`` or ``httpx.HTTPStatusError`` on failure."""
     if body.k_max < body.k:
         raise ValueError("k_max must be >= k")
-    with bind_request_context(body.request_id, body.session_id):
-        answer, citations = complete_rag_answer(
-            body.question,
-            body.collection_base,
-            body.request_id,
-            body.session_id,
-            k=body.k,
-            k_max=body.k_max,
-            max_tokens=body.max_tokens,
-            expand_on_not_found=body.expand_on_not_found,
-        )
+    answer, citations = await complete_rag_answer(
+        body.question,
+        body.collection_base,
+        body.request_id,
+        body.session_id,
+        k=body.k,
+        k_max=body.k_max,
+        max_tokens=body.max_tokens,
+        expand_on_not_found=body.expand_on_not_found,
+    )
     return {"answer": answer, "citations": citations}
 
 
@@ -67,14 +69,15 @@ def retrieve_chunks(
     k: int = 5,
 ) -> list[dict]:
     """Hybrid retrieval from Qdrant. collection_base is suffixed with ENV from .env (e.g. taixing_knowledge + dev → taixing_knowledge_dev)."""
-    with bind_request_context(request_id, session_id):
-        return _query_chunks(
+    return run_async(
+        _query_chunks_async(
             query,
             collection_base,
             k=k,
             request_id=request_id,
             session_id=session_id,
         )
+    )
 
 
 @mcp.tool
@@ -84,8 +87,7 @@ def embed_text(
     session_id: str,
 ) -> list[float]:
     """Embed a single string via the configured /v1/embeddings API. Returns the embedding vector."""
-    with bind_request_context(request_id, session_id):
-        return _embed_text(text, request_id=request_id, session_id=session_id)
+    return run_async(_embed_text_async(text, request_id=request_id, session_id=session_id))
 
 
 @mcp.tool
@@ -100,8 +102,8 @@ def answer_from_inference(
     expand_on_not_found: bool = True,
 ) -> dict[str, Any]:
     """Retrieve once (pool k_max), then chat; optional slice widen on NOT_FOUND. Set expand_on_not_found false for single-pass eval."""
-    with bind_request_context(request_id, session_id):
-        answer, citations = complete_rag_answer(
+    answer, citations = run_async(
+        complete_rag_answer(
             question,
             collection_base,
             request_id,
@@ -111,6 +113,7 @@ def answer_from_inference(
             max_tokens=max_tokens,
             expand_on_not_found=expand_on_not_found,
         )
+    )
     return {"answer": answer, "citations": citations}
 
 
@@ -131,7 +134,7 @@ async def answer_from_inference_http(request: Request) -> JSONResponse:
     try:
         # method/path/status for stderr + Loki JSON lines (matches ASGI access log when happy path).
         with bind_http_context(method, path, status="200"):
-            out = answer_from_inference_payload(body)
+            out = await answer_from_inference_payload_async(body)
     except ValueError as e:
         return JSONResponse({"detail": str(e)}, status_code=400)
     except httpx.HTTPStatusError as e:

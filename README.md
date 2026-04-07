@@ -46,7 +46,7 @@ On `import app`, logs go to **stderr** as **JSON lines** (`ts`, `request_id`, `s
 
 Load variables from `.env` (or substitute literals). Use these to verify each dependency before running Python.
 
-**Embedding API** — same paths and headers as `app/embed.py` (`/v1/embeddings`):
+**Embedding API** — same paths and headers as `app/http/embed.py` (`/v1/embeddings`):
 
 ```bash
 set -a && source .env && set +a   # or: export EMBEDDING_URL=... etc.
@@ -86,30 +86,34 @@ curl -sS "${QDRANT_URL}/collections"
 ## Usage
 
 ```python
+import asyncio
 from app import embed_text, query_chunks
+from qdrant_client import AsyncQdrantClient
 
-# request_id / session_id are required (X-Request-Id / X-Session-Id on the embedding API)
-chunks = query_chunks(
-    "who is taixing's visa status",
-    "taixing_knowledge",
-    k=5,
-    request_id="request_id_1",
-    session_id="session_id_1",
-)
+async def main():
+    # request_id / session_id are required (X-Request-Id / X-Session-Id on the embedding API)
+    chunks = await query_chunks(
+        "who is taixing's visa status",
+        "taixing_knowledge",
+        k=5,
+        request_id="request_id_1",
+        session_id="session_id_1",
+    )
 
-# Pass your own QdrantClient
-from qdrant_client import QdrantClient
-client = QdrantClient(url="...", api_key="...")
-chunks = query_chunks(
-    "query",
-    "my_collection",
-    k=5,
-    request_id="request_id_1",
-    session_id="session_id_1",
-    client=client,
-)
+    # Pass your own AsyncQdrantClient (or omit ``client=`` to open one per call)
+    async with AsyncQdrantClient(url="...", api_key="...") as client:
+        chunks = await query_chunks(
+            "query",
+            "my_collection",
+            k=5,
+            request_id="request_id_1",
+            session_id="session_id_1",
+            client=client,
+        )
 
-vector = embed_text("some text", request_id="r1", session_id="s1")
+    vector = await embed_text("some text", request_id="r1", session_id="s1")
+
+asyncio.run(main())
 ```
 
 ## MCP (FastMCP)
@@ -156,7 +160,7 @@ CLI: `fastmcp run main.py:mcp`
 
 ## RAG + inference (chat API)
 
-End-to-end: **hybrid retrieval** (`query_chunks`) → **prompt** → OpenAI-compatible **`POST /v1/chat/completions`** (e.g. Qwen on port 30080).
+End-to-end: **hybrid retrieval** (`query_chunks` in `app/retrieval.py`; Qdrant client setup in `app/qdrant/client.py`) → **prompt** → OpenAI-compatible **`POST /v1/chat/completions`** (e.g. Qwen on port 30080).
 
 ```bash
 # Or set INFERENCE_URL / INFERENCE_MODEL in `.env` (see `.env.example`)
@@ -173,8 +177,7 @@ curl -X POST http://localhost:8000/v1/rag/query \
     "collection_base": "taixing_knowledge",
     "request_id": "request_id_1",
     "session_id": "session_id_1",
-    "k": 5,
-    "k_max": 40
+    "k": 5
   }'
 
 ## eva

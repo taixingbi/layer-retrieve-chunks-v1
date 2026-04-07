@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-RAG: ``query_chunks`` → ranked passages → ``/v1/chat/completions`` (OpenAI-compatible).
+RAG: ``app.retrieval.query_chunks`` → ranked passages → ``/v1/chat/completions`` (OpenAI-compatible).
 
 Run from repo root (requires ``.env``). Defaults match a local vLLM/LMDeploy-style server:
 
@@ -23,21 +23,14 @@ import uuid
 import httpx
 
 from app.config import get_inference_max_tokens, get_inference_model, get_inference_url
-from app.embed import embed_text
+from app.asyncio_util import run_async
+from app.http.embed import embed_text
+from app.http.inference import chat_complete
 from app.logging_config import logger
-from app.query import query_chunks
+from app.retrieval import query_chunks
 from app.request_context import bind_request_context
 
 _NOT_FOUND_REPLY = "NOT_FOUND"
-
-_chat_http: httpx.Client | None = None
-
-
-def _chat_http_client() -> httpx.Client:
-    global _chat_http
-    if _chat_http is None:
-        _chat_http = httpx.Client()
-    return _chat_http
 
 
 def _build_numbered_context(
@@ -95,37 +88,6 @@ def _citations_used_in_answer(answer: str, citations: list[dict]) -> list[dict]:
     return used
 
 
-def chat_complete(
-    *,
-    base_url: str,
-    model: str,
-    messages: list[dict],
-    max_tokens: int,
-    timeout: float = 120.0,
-) -> str:
-    url = f"{base_url.rstrip('/')}/v1/chat/completions"
-    client = _chat_http_client()
-    r = client.post(
-        url,
-        json={"model": model, "messages": messages, "max_tokens": max_tokens},
-        headers={"Content-Type": "application/json"},
-        timeout=timeout,
-    )
-    r.raise_for_status()
-    data = r.json()
-    try:
-        text = (data["choices"][0]["message"]["content"] or "").strip()
-        logger.info(
-            "chat_complete ok url=%s model=%s reply_chars=%s",
-            url,
-            model,
-            len(text),
-        )
-        return text
-    except (KeyError, IndexError, TypeError) as e:
-        raise RuntimeError(f"Unexpected chat response shape: {data!r}") from e
-
-
 def _answer_needs_more_context(answer: str) -> bool:
     """True when we should retrieve more chunks (empty reply or explicit NOT_FOUND)."""
     if not answer:
@@ -133,7 +95,11 @@ def _answer_needs_more_context(answer: str) -> bool:
     return answer.strip() == _NOT_FOUND_REPLY
 
 
-def complete_rag_answer(
+def _with_citations(answer: str, citations: list[dict]) -> tuple[str, list[dict]]:
+    return answer, _citations_used_in_answer(answer, citations)
+
+
+async def complete_rag_answer(
     question: str,
     collection_base: str,
     request_id: str,
@@ -186,8 +152,10 @@ def complete_rag_answer(
             k,
             k_max,
         )
-        query_vector = embed_text(question, request_id=request_id, session_id=session_id)
-        chunks_full = query_chunks(
+        query_vector = await embed_text(
+            question, request_id=request_id, session_id=session_id
+        )
+        chunks_full = await query_chunks(
             question,
             collection_base,
             k=k_max,
@@ -215,7 +183,7 @@ def complete_rag_answer(
                     ),
                 },
             ]
-            last_answer = chat_complete(
+            last_answer = await chat_complete(
                 base_url=infer_base,
                 model=model,
                 messages=messages,
@@ -223,14 +191,14 @@ def complete_rag_answer(
             )
             if not _answer_needs_more_context(last_answer):
                 logger.info("complete_rag_answer done k_used=%s", current_k)
-                return last_answer, _citations_used_in_answer(last_answer, last_citations)
+                return _with_citations(last_answer, last_citations)
 
             if not expand_on_not_found:
                 logger.info(
                     "complete_rag_answer done single_pass k_used=%s (expand_on_not_found=False)",
                     current_k,
                 )
-                return last_answer, _citations_used_in_answer(last_answer, last_citations)
+                return _with_citations(last_answer, last_citations)
 
             next_k = min(current_k * 2, k_max, len(chunks_full))
             if next_k <= current_k:
@@ -238,7 +206,7 @@ def complete_rag_answer(
                     "complete_rag_answer done needs_more_context k_used=%s",
                     current_k,
                 )
-                return last_answer, _citations_used_in_answer(last_answer, last_citations)
+                return _with_citations(last_answer, last_citations)
             logger.info(
                 "complete_rag_answer widen context slice %s -> %s (same retrieval pool)",
                 current_k,
@@ -281,15 +249,17 @@ def main(argv: list[str] | None = None) -> int:
     sid = os.environ.get("RAG_SESSION_ID") or str(uuid.uuid4())
 
     try:
-        answer, citations = complete_rag_answer(
-            args.question,
-            args.collection,
-            rid,
-            sid,
-            k=args.k,
-            k_max=args.k_max,
-            max_tokens=args.max_tokens,
-            expand_on_not_found=not args.single_pass,
+        answer, citations = run_async(
+            complete_rag_answer(
+                args.question,
+                args.collection,
+                rid,
+                sid,
+                k=args.k,
+                k_max=args.k_max,
+                max_tokens=args.max_tokens,
+                expand_on_not_found=not args.single_pass,
+            )
         )
     except ValueError as e:
         print(e, file=sys.stderr)

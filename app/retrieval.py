@@ -1,44 +1,26 @@
 """
-Hybrid query chunks: dense (vector) + BM25 + RRF fusion.
+Hybrid chunk retrieval: dense (vector) + BM25 + RRF fusion over Qdrant.
 """
+from __future__ import annotations
+
+import asyncio
 import json
 import re
 
-from qdrant_client import QdrantClient
+from qdrant_client import AsyncQdrantClient
 from rank_bm25 import BM25Okapi
 
 from app.config import (
     get_env,
-    get_qdrant_api_key,
-    get_qdrant_url,
     TOP_K_DENSE,
     RRF_K,
 )
-from app.embed import embed_text
+from app.http.embed import embed_text
 from app.logging_config import logger
+from app.qdrant.client import create_async_client, resolve_connection_params
 from app.request_context import bind_request_context
 
 _TOKEN_RE = re.compile(r"\b\w+\b")
-
-_client: QdrantClient | None = None
-
-
-def _make_client(url: str | None = None, api_key: str | None = None) -> QdrantClient:
-    """Create QdrantClient from url/api_key or config."""
-    u = url if url is not None else get_qdrant_url()
-    k = api_key if api_key is not None else get_qdrant_api_key()
-    return QdrantClient(
-        url=u,
-        api_key=k or None,
-        check_compatibility=False,
-    )
-
-
-def _get_client() -> QdrantClient:
-    global _client
-    if _client is None:
-        _client = _make_client()
-    return _client
 
 
 def _tokenize(text: str) -> list[str]:
@@ -46,8 +28,8 @@ def _tokenize(text: str) -> list[str]:
     return _TOKEN_RE.findall(text.lower())
 
 
-def _search_dense(
-    client: QdrantClient,
+async def _search_dense(
+    client: AsyncQdrantClient,
     query: str,
     collection_name: str,
     k: int,
@@ -60,16 +42,16 @@ def _search_dense(
     if query_vector is not None:
         vector = query_vector
     else:
-        vector = embed_text(query, request_id=request_id, session_id=session_id)
-    response = client.query_points(
+        vector = await embed_text(query, request_id=request_id, session_id=session_id)
+    response = await client.query_points(
         collection_name=collection_name,
         query=vector,
         limit=k,
     )
-    hits = []
+    hits: list[dict] = []
     for rank, hit in enumerate(response.points, start=1):
         payload = hit.payload or {}
-        meta = {key: val for key, val in payload.items() if key != "text"}
+        meta = {k: v for k, v in payload.items() if k != "text"}
         hits.append({
             "chunk_id": str(hit.id),
             "text": payload.get("text", ""),
@@ -152,7 +134,35 @@ def _fuse_rrf(
     return merged[:k_final]
 
 
-def query_chunks(
+def _fusion_pack_and_log_line(
+    query: str,
+    dense_hits: list[dict],
+    k: int,
+    rrf_k: int,
+) -> tuple[list[dict], str]:
+    """BM25 + RRF + ranked rows + log JSON (CPU-bound; one ``to_thread``)."""
+    _search_bm25(query, dense_hits)
+    merged = _fuse_rrf(dense_hits, dense_hits, k_final=k, rrf_k=rrf_k)
+    out = [
+        {
+            "rank": rank,
+            "chunk_id": h.get("chunk_id", ""),
+            "score": h.get("rrf_score", 0.0),
+            "text": h.get("text", ""),
+            "source": h.get("source_file", h.get("source", "")),
+            "metadata": h.get("metadata", {}),
+            "scores": {
+                "rrf_score": h.get("rrf_score", 0.0),
+                "dense_score": h.get("dense_score", 0.0),
+                "bm25_score": h.get("bm25_score", 0.0),
+            },
+        }
+        for rank, h in enumerate(merged, start=1)
+    ]
+    return out, _chunks_for_log(out)
+
+
+async def query_chunks(
     query: str,
     collection_name: str,
     k: int = 10,
@@ -163,7 +173,7 @@ def query_chunks(
     rrf_k: int = RRF_K,
     qdrant_url: str | None = None,
     qdrant_api_key: str | None = None,
-    client: QdrantClient | None = None,
+    client: AsyncQdrantClient | None = None,
     query_vector: list[float] | None = None,
     qdrant_limit_override: int | None = None,
 ) -> list[dict]:
@@ -182,7 +192,7 @@ def query_chunks(
         rrf_k: RRF constant ``k`` in ``1 / (k + rank)``.
         qdrant_url: Qdrant URL override (else ``QDRANT_URL`` from ``.env``).
         qdrant_api_key: Qdrant API key override (else ``QDRANT_API_KEY`` from ``.env``).
-        client: Use this ``QdrantClient`` (skips URL / api_key overrides).
+        client: Use this ``AsyncQdrantClient`` (caller manages lifecycle; skips creating one).
         query_vector: If set, use for dense search and do not call the embedding API for this query.
         qdrant_limit_override: If set, Qdrant dense ``limit`` is ``max(top_k_dense, override)``.
 
@@ -191,66 +201,56 @@ def query_chunks(
     3. RRF: fuse both rankings, return top k
     """
     with bind_request_context(request_id, session_id):
-        if client is None:
-            if qdrant_url is not None or qdrant_api_key is not None:
-                client = _make_client(url=qdrant_url, api_key=qdrant_api_key)
-            else:
-                client = _get_client()
 
-        coll = _qdrant_collection_name(collection_name)
-        dense_limit = (
-            max(top_k_dense, qdrant_limit_override)
-            if qdrant_limit_override is not None
-            else top_k_dense
-        )
-        logger.info(
-            "query_chunks start collection=%s k=%s dense_limit=%s cached_vec=%s",
-            coll,
-            k,
-            dense_limit,
-            query_vector is not None,
-        )
+        async def _run(ac: AsyncQdrantClient) -> list[dict]:
+            coll = _qdrant_collection_name(collection_name)
+            dense_limit = (
+                max(top_k_dense, qdrant_limit_override)
+                if qdrant_limit_override is not None
+                else top_k_dense
+            )
+            logger.info(
+                "query_chunks start collection=%s k=%s dense_limit=%s cached_vec=%s",
+                coll,
+                k,
+                dense_limit,
+                query_vector is not None,
+            )
 
-        # Run dense search
-        dense_hits = _search_dense(
-            client,
-            query,
-            coll,
-            k=dense_limit,
-            request_id=request_id,
-            session_id=session_id,
-            query_vector=query_vector,
-        )
-        if not dense_hits:
-            logger.info("query_chunks done dense_hits=0 returned=0")
-            return []
+            dense_hits = await _search_dense(
+                ac,
+                query,
+                coll,
+                k=dense_limit,
+                request_id=request_id,
+                session_id=session_id,
+                query_vector=query_vector,
+            )
+            if not dense_hits:
+                logger.info("query_chunks done dense_hits=0 returned=0")
+                return []
 
-        # BM25 over dense candidates (adds bm25_rank, bm25_score to each)
-        _search_bm25(query, dense_hits)
+            out, log_out = await asyncio.to_thread(
+                _fusion_pack_and_log_line,
+                query,
+                dense_hits,
+                k,
+                rrf_k,
+            )
+            logger.info(
+                "query_chunks ok dense_candidates=%s returned=%s out=%s",
+                len(dense_hits),
+                len(out),
+                log_out,
+            )
+            return out
 
-        # RRF fuse: each doc contributes from dense_rank and bm25_rank
-        merged = _fuse_rrf(dense_hits, dense_hits, k_final=k, rrf_k=rrf_k)
+        if client is not None:
+            return await _run(client)
 
-        out = [
-            {
-                "rank": rank,
-                "chunk_id": h.get("chunk_id", ""),
-                "score": h.get("rrf_score", 0.0),
-                "text": h.get("text", ""),
-                "source": h.get("source_file", h.get("source", "")),
-                "metadata": h.get("metadata", {}),
-                "scores": {
-                    "rrf_score": h.get("rrf_score", 0.0),
-                    "dense_score": h.get("dense_score", 0.0),
-                    "bm25_score": h.get("bm25_score", 0.0),
-                },
-            }
-            for rank, h in enumerate(merged, start=1)
-        ]
-        logger.info(
-            "query_chunks ok dense_candidates=%s returned=%s out=%s",
-            len(dense_hits),
-            len(out),
-            _chunks_for_log(out),
-        )
-        return out
+        u, key = resolve_connection_params(qdrant_url, qdrant_api_key)
+        ac = create_async_client(u, key)
+        try:
+            return await _run(ac)
+        finally:
+            await ac.close()

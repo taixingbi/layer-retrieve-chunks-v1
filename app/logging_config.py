@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import json
 import logging
+import logging.handlers
 import os
+import queue
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -49,11 +51,10 @@ _ENV_PATH = _PROJECT_ROOT / ".env"
 
 class _SyncLokiHandler(logging.Handler):
     """
-    Ship each record with LokiClient in emit() (calling thread).
+    Ship each record with LokiClient in emit().
 
-    tb-loki-central-logger's LokiHandler uses a background thread + queue; under Uvicorn
-    that can leave only the first line (emitted at import) visible in Grafana while
-    request-scoped logs still appear on stderr. Synchronous push avoids that class of bug.
+    Used only from a ``QueueListener`` worker thread so ``push()`` never blocks the asyncio
+    event loop (see ``setup_logging``).
     """
 
     def __init__(
@@ -123,11 +124,13 @@ class _JsonFormatter(logging.Formatter):
 
 _JSON_FORMATTER = _JsonFormatter()
 
-_loki_handler: logging.Handler | None = None
+_loki_listener: logging.handlers.QueueListener | None = None
+_loki_queue_handler: logging.handlers.QueueHandler | None = None
+_loki_worker_handler: _SyncLokiHandler | None = None
 
 
 def setup_logging() -> None:
-    global _loki_handler
+    global _loki_listener, _loki_queue_handler, _loki_worker_handler
     load_dotenv(_ENV_PATH)
 
     logger.setLevel(logging.INFO)
@@ -143,7 +146,12 @@ def setup_logging() -> None:
 
     auth = basic_auth_from_env()
     if auth is not None:
-        _loki_handler = _SyncLokiHandler(
+        log_queue: queue.Queue[logging.LogRecord] = queue.Queue(-1)
+        _loki_queue_handler = logging.handlers.QueueHandler(log_queue)
+        _loki_queue_handler.setLevel(logging.INFO)
+        logger.addHandler(_loki_queue_handler)
+
+        _loki_worker_handler = _SyncLokiHandler(
             labels={
                 "service": "layer-rag-query",
                 "component": "query",
@@ -152,9 +160,14 @@ def setup_logging() -> None:
             },
             basic_auth=auth,
         )
-        _loki_handler.setLevel(logging.INFO)
-        _loki_handler.setFormatter(_JSON_FORMATTER)
-        logger.addHandler(_loki_handler)
+        _loki_worker_handler.setLevel(logging.INFO)
+        _loki_worker_handler.setFormatter(_JSON_FORMATTER)
+        _loki_listener = logging.handlers.QueueListener(
+            log_queue,
+            _loki_worker_handler,
+            respect_handler_level=True,
+        )
+        _loki_listener.start()
         logger.info("centralized Loki logging enabled")
     else:
         logger.info(
@@ -163,8 +176,14 @@ def setup_logging() -> None:
 
 
 def shutdown_logging() -> None:
-    global _loki_handler
-    if _loki_handler is not None:
-        logger.removeHandler(_loki_handler)
-        _loki_handler.close()
-        _loki_handler = None
+    global _loki_listener, _loki_queue_handler, _loki_worker_handler
+    if _loki_listener is not None:
+        _loki_listener.stop()
+        _loki_listener = None
+    if _loki_queue_handler is not None:
+        logger.removeHandler(_loki_queue_handler)
+        _loki_queue_handler.close()
+        _loki_queue_handler = None
+    if _loki_worker_handler is not None:
+        _loki_worker_handler.close()
+        _loki_worker_handler = None
