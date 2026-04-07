@@ -54,9 +54,13 @@ def _search_dense(
     *,
     request_id: str,
     session_id: str,
+    query_vector: list[float] | None = None,
 ) -> list[dict]:
-    """Dense vector search via Qdrant."""
-    vector = embed_text(query, request_id=request_id, session_id=session_id)
+    """Dense vector search via Qdrant. Pass ``query_vector`` to skip re-embedding the query."""
+    if query_vector is not None:
+        vector = query_vector
+    else:
+        vector = embed_text(query, request_id=request_id, session_id=session_id)
     response = client.query_points(
         collection_name=collection_name,
         query=vector,
@@ -160,6 +164,8 @@ def query_chunks(
     qdrant_url: str | None = None,
     qdrant_api_key: str | None = None,
     client: QdrantClient | None = None,
+    query_vector: list[float] | None = None,
+    qdrant_limit_override: int | None = None,
 ) -> list[dict]:
     """
     Hybrid retrieval: dense + BM25 + RRF fusion.
@@ -172,13 +178,15 @@ def query_chunks(
         k: Number of chunks to return after RRF.
         request_id: Embedding ``X-Request-Id`` (required, non-empty).
         session_id: Embedding ``X-Session-Id`` (required, non-empty).
-        top_k_dense: Dense recall size before BM25 + RRF.
+        top_k_dense: Default dense recall limit (before ``qdrant_limit_override``).
         rrf_k: RRF constant ``k`` in ``1 / (k + rank)``.
         qdrant_url: Qdrant URL override (else ``QDRANT_URL`` from ``.env``).
         qdrant_api_key: Qdrant API key override (else ``QDRANT_API_KEY`` from ``.env``).
         client: Use this ``QdrantClient`` (skips URL / api_key overrides).
+        query_vector: If set, use for dense search and do not call the embedding API for this query.
+        qdrant_limit_override: If set, Qdrant dense ``limit`` is ``max(top_k_dense, override)``.
 
-    1. Dense: embed query → Qdrant vector search → top_k_dense
+    1. Dense: embed query (unless ``query_vector``) → Qdrant vector search
     2. BM25: rank those hits with BM25
     3. RRF: fuse both rankings, return top k
     """
@@ -190,11 +198,17 @@ def query_chunks(
                 client = _get_client()
 
         coll = _qdrant_collection_name(collection_name)
+        dense_limit = (
+            max(top_k_dense, qdrant_limit_override)
+            if qdrant_limit_override is not None
+            else top_k_dense
+        )
         logger.info(
-            "query_chunks start collection=%s k=%s top_k_dense=%s",
+            "query_chunks start collection=%s k=%s dense_limit=%s cached_vec=%s",
             coll,
             k,
-            top_k_dense,
+            dense_limit,
+            query_vector is not None,
         )
 
         # Run dense search
@@ -202,9 +216,10 @@ def query_chunks(
             client,
             query,
             coll,
-            k=top_k_dense,
+            k=dense_limit,
             request_id=request_id,
             session_id=session_id,
+            query_vector=query_vector,
         )
         if not dense_hits:
             logger.info("query_chunks done dense_hits=0 returned=0")

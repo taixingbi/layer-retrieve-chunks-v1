@@ -29,6 +29,7 @@ class AnswerFromInferenceBody(BaseModel):
     k: int = Field(default=5, ge=1)
     k_max: int = Field(default=40, ge=1)
     max_tokens: int | None = None
+    expand_on_not_found: bool = True
 
 
 def answer_from_inference_payload(body: AnswerFromInferenceBody) -> dict[str, Any]:
@@ -44,6 +45,7 @@ def answer_from_inference_payload(body: AnswerFromInferenceBody) -> dict[str, An
             k=body.k,
             k_max=body.k_max,
             max_tokens=body.max_tokens,
+            expand_on_not_found=body.expand_on_not_found,
         )
     return {"answer": answer, "citations": citations}
 
@@ -95,8 +97,9 @@ def answer_from_inference(
     k: int = 5,
     k_max: int = 40,
     max_tokens: int | None = None,
+    expand_on_not_found: bool = True,
 ) -> dict[str, Any]:
-    """Retrieve chunks (retry with larger k up to k_max if the model returns empty or NOT_FOUND), then POST to INFERENCE_URL /v1/chat/completions. ``citations`` lists only chunks referenced via [n] in ``answer``."""
+    """Retrieve once (pool k_max), then chat; optional slice widen on NOT_FOUND. Set expand_on_not_found false for single-pass eval."""
     with bind_request_context(request_id, session_id):
         answer, citations = complete_rag_answer(
             question,
@@ -106,6 +109,7 @@ def answer_from_inference(
             k=k,
             k_max=k_max,
             max_tokens=max_tokens,
+            expand_on_not_found=expand_on_not_found,
         )
     return {"answer": answer, "citations": citations}
 

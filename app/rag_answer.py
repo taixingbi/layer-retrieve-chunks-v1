@@ -23,6 +23,7 @@ import uuid
 import httpx
 
 from app.config import get_inference_max_tokens, get_inference_model, get_inference_url
+from app.embed import embed_text
 from app.logging_config import logger
 from app.query import query_chunks
 from app.request_context import bind_request_context
@@ -141,6 +142,7 @@ def complete_rag_answer(
     k: int = 5,
     k_max: int = 40,
     max_tokens: int | None = None,
+    expand_on_not_found: bool = True,
 ) -> tuple[str, list[dict]]:
     """
     ``query_chunks`` → numbered context → ``POST .../v1/chat/completions``.
@@ -149,8 +151,11 @@ def complete_rag_answer(
     Returns ``(answer, citations)`` where ``citations`` lists only passages the model
     referenced with ``[n]`` in ``answer`` (each item: ``cite_id``, ``chunk_id``, ``source``, ``text``).
 
-    If the model returns an empty string or exactly ``NOT_FOUND``, retries with larger ``k``
-    (doubling capped by ``k_max``) until a substantive answer or ``k`` can no longer increase.
+    One hybrid retrieval at ``k_max`` (query embedded once, Qdrant limit
+    ``max(TOP_K_DENSE, k_max)``). NOT_FOUND / empty retries only **widen the local slice**
+    ``chunks_full[:k]`` (no second embed, no second Qdrant round).
+
+    Set ``expand_on_not_found=False`` for a single chat call at the initial ``k`` (typical for eval).
     """
     if max_tokens is None:
         max_tokens = get_inference_max_tokens()
@@ -181,19 +186,24 @@ def complete_rag_answer(
             k,
             k_max,
         )
-        current_k = k
+        query_vector = embed_text(question, request_id=request_id, session_id=session_id)
+        chunks_full = query_chunks(
+            question,
+            collection_base,
+            k=k_max,
+            request_id=request_id,
+            session_id=session_id,
+            query_vector=query_vector,
+            qdrant_limit_override=k_max,
+        )
+        if not chunks_full:
+            raise ValueError("No chunks retrieved for this query.")
+
+        current_k = min(k, len(chunks_full))
         last_answer = ""
         last_citations: list[dict] = []
         while True:
-            chunks = query_chunks(
-                question,
-                collection_base,
-                k=current_k,
-                request_id=request_id,
-                session_id=session_id,
-            )
-            if not chunks:
-                raise ValueError("No chunks retrieved for this query.")
+            chunks = chunks_full[:current_k]
 
             context, last_citations = _build_numbered_context(chunks)
             messages = [
@@ -215,7 +225,14 @@ def complete_rag_answer(
                 logger.info("complete_rag_answer done k_used=%s", current_k)
                 return last_answer, _citations_used_in_answer(last_answer, last_citations)
 
-            next_k = min(current_k * 2, k_max)
+            if not expand_on_not_found:
+                logger.info(
+                    "complete_rag_answer done single_pass k_used=%s (expand_on_not_found=False)",
+                    current_k,
+                )
+                return last_answer, _citations_used_in_answer(last_answer, last_citations)
+
+            next_k = min(current_k * 2, k_max, len(chunks_full))
             if next_k <= current_k:
                 logger.info(
                     "complete_rag_answer done needs_more_context k_used=%s",
@@ -223,7 +240,7 @@ def complete_rag_answer(
                 )
                 return last_answer, _citations_used_in_answer(last_answer, last_citations)
             logger.info(
-                "complete_rag_answer retry larger k %s -> %s",
+                "complete_rag_answer widen context slice %s -> %s (same retrieval pool)",
                 current_k,
                 next_k,
             )
@@ -246,7 +263,12 @@ def main(argv: list[str] | None = None) -> int:
         "--k-max",
         type=int,
         default=40,
-        help="Upper bound on k when retrying after empty or NOT_FOUND (double k until this cap)",
+        help="Retrieval pool size (RRF top-k); also cap when widening context slice on NOT_FOUND",
+    )
+    p.add_argument(
+        "--single-pass",
+        action="store_true",
+        help="One chat at initial k only (no widening slice after NOT_FOUND / empty).",
     )
     p.add_argument(
         "--max-tokens",
@@ -267,6 +289,7 @@ def main(argv: list[str] | None = None) -> int:
             k=args.k,
             k_max=args.k_max,
             max_tokens=args.max_tokens,
+            expand_on_not_found=not args.single_pass,
         )
     except ValueError as e:
         print(e, file=sys.stderr)
