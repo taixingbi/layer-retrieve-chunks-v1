@@ -176,3 +176,8 @@ curl -X POST http://localhost:8000/v1/rag/query \
     "k": 5,
     "k_max": 40
   }'
+
+## eva
+python eva/test.py -i eva/dataset/dataset-gold-test-1.0.0.json -o eva/result/dataset-gold-test-1.0.0.json
+
+python eva/metric.py -i eva/result/dataset-gold-test-1.0.0.json -o eva/result/dataset-gold-test-eva-1.0.0.json
