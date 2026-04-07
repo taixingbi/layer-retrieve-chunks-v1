@@ -171,7 +171,7 @@ def setup_logging() -> None:
         logger.info("centralized Loki logging enabled")
     else:
         logger.info(
-            "Loki disabled (set GRAFANA_CLOUD_WRITE_API_KEY to ship logs to Grafana)"
+            "Loki disabled (set GRAFANA_CLOUD_API_KEY to ship logs to Grafana)"
         )
 
 
