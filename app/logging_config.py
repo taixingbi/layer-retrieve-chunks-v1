@@ -7,11 +7,48 @@ import logging.handlers
 import os
 import queue
 import sys
+import urllib.error
+import urllib.request
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from tb_loki_central_logger import LokiClient, basic_auth_from_env, load_dotenv
+
+_LOKI_PUSH_ERRORS_LOGGED = 0
+_LOKI_PUSH_ERROR_LOG_CAP = 5
+
+
+class _LokiClientNoSystemProxy(LokiClient):
+    """Same as LokiClient but does not use HTTP(S)_PROXY (broken tunnels often return 403)."""
+
+    _opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+    def _send(self, body: bytes) -> None:
+        req = urllib.request.Request(
+            self.endpoint,
+            data=body,
+            headers=self._http_headers,
+            method="POST",
+        )
+        with self._lock:
+            try:
+                with self._opener.open(req, timeout=self.timeout) as resp:
+                    resp.read()
+            except urllib.error.HTTPError as e:
+                detail = e.read().decode("utf-8", errors="replace")
+                raise RuntimeError(
+                    f"Loki push failed: HTTP {e.code} {e.reason}. Response: {detail}"
+                ) from e
+            except urllib.error.URLError as e:
+                raise RuntimeError(f"Loki push failed: {e}") from e
+
+
+def _loki_client_cls() -> type[LokiClient]:
+    v = os.getenv("LOKI_IGNORE_SYSTEM_PROXY", "").strip().lower()
+    if v in ("1", "true", "yes", "on"):
+        return _LokiClientNoSystemProxy
+    return LokiClient
 
 from . import __version__
 from .request_context import (
@@ -65,19 +102,33 @@ class _SyncLokiHandler(logging.Handler):
         timeout: int = 15,
     ) -> None:
         super().__init__()
-        self._client = LokiClient(
+        self._client = _loki_client_cls()(
             labels=labels,
             timeout=timeout,
             basic_auth=basic_auth,
         )
 
     def emit(self, record: logging.LogRecord) -> None:
+        global _LOKI_PUSH_ERRORS_LOGGED
         try:
             level = _LOKI_LEVEL.get(record.levelname, "info")
             message = self.format(record)
             self._client.push(message, level=level, labels={"logger": record.name})
-        except Exception:
-            self.handleError(record)
+        except Exception as e:
+            _LOKI_PUSH_ERRORS_LOGGED += 1
+            n = _LOKI_PUSH_ERRORS_LOGGED
+            if n <= _LOKI_PUSH_ERROR_LOG_CAP:
+                print(
+                    f"layer_rag.query: Loki push failed: {e}; "
+                    f"logs still go to stderr. "
+                    f"If you use a proxy, try LOKI_IGNORE_SYSTEM_PROXY=1 in `.env`.",
+                    file=sys.stderr,
+                )
+            elif n == _LOKI_PUSH_ERROR_LOG_CAP + 1:
+                print(
+                    "layer_rag.query: further Loki push errors suppressed",
+                    file=sys.stderr,
+                )
 
 
 class _RequestContextFilter(logging.Filter):

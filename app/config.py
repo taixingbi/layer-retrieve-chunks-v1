@@ -13,8 +13,6 @@ import os
 
 from dotenv import dotenv_values, load_dotenv
 
-from app.logging_config import setup_logging
-
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _ENV_PATH = _PROJECT_ROOT / ".env"
 
@@ -53,6 +51,11 @@ def _ensure_dotenv() -> None:
 
 
 _ensure_dotenv()
+
+# After project `.env` is in os.environ: tb-loki's package import runs load_dotenv_cwd();
+# importing logging_config before _ensure_dotenv can miss GRAFANA_* when CWD has no `.env`.
+from app.logging_config import setup_logging
+
 setup_logging()
 
 

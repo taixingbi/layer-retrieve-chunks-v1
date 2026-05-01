@@ -23,6 +23,11 @@ from app.request_context import bind_request_context
 _TOKEN_RE = re.compile(r"\b\w+\b")
 
 
+def _payload_source(payload: dict) -> str:
+    """Ingest uses ``source``; some corpora use ``source_file``."""
+    return (payload.get("source_file") or payload.get("source") or "") if payload else ""
+
+
 def _tokenize(text: str) -> list[str]:
     """Simple tokenizer: lowercase, alphanumeric tokens."""
     return _TOKEN_RE.findall(text.lower())
@@ -55,7 +60,7 @@ async def _search_dense(
         hits.append({
             "chunk_id": str(hit.id),
             "text": payload.get("text", ""),
-            "source": payload.get("source_file", ""),
+            "source": _payload_source(payload),
             "metadata": meta,
             "dense_rank": rank,
             "dense_score": hit.score,
@@ -149,7 +154,7 @@ def _fusion_pack_and_log_line(
             "chunk_id": h.get("chunk_id", ""),
             "score": h.get("rrf_score", 0.0),
             "text": h.get("text", ""),
-            "source": h.get("source_file", h.get("source", "")),
+            "source": h.get("source_file") or h.get("source", ""),
             "metadata": h.get("metadata", {}),
             "scores": {
                 "rrf_score": h.get("rrf_score", 0.0),
