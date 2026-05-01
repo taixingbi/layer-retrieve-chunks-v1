@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from collections.abc import Awaitable, Callable
 
 from qdrant_client import AsyncQdrantClient
 from rank_bm25 import BM25Okapi
@@ -21,6 +22,7 @@ from app.qdrant.client import create_async_client, resolve_connection_params
 from app.request_context import bind_request_context
 
 _TOKEN_RE = re.compile(r"\b\w+\b")
+LexicalRetriever = Callable[[str, int], Awaitable[list[dict]]]
 
 
 def _payload_source(payload: dict) -> str:
@@ -139,15 +141,49 @@ def _fuse_rrf(
     return merged[:k_final]
 
 
+def _prepare_bm25_hits(
+    query: str,
+    dense_hits: list[dict],
+    lexical_hits: list[dict] | None = None,
+) -> list[dict]:
+    """
+    Build lexical-ranked hits for fusion.
+
+    If ``lexical_hits`` is omitted, use BM25-over-dense fallback (not true hybrid).
+    If provided, expects each hit to carry ``chunk_id`` and either:
+    - ``bm25_rank``, or
+    - ``bm25_score`` (sorted descending then ranked).
+    """
+    if lexical_hits is None:
+        fallback = [dict(h) for h in dense_hits]
+        _search_bm25(query, fallback)
+        return fallback
+
+    out = [dict(h) for h in lexical_hits if h.get("chunk_id")]
+    if not out:
+        return []
+
+    if all(h.get("bm25_rank") for h in out):
+        out.sort(key=lambda x: int(x.get("bm25_rank", 0)))
+        return out
+
+    out.sort(key=lambda x: float(x.get("bm25_score", 0.0)), reverse=True)
+    for rank, h in enumerate(out, start=1):
+        h["bm25_rank"] = rank
+        h["bm25_score"] = float(h.get("bm25_score", 0.0))
+    return out
+
+
 def _fusion_pack_and_log_line(
     query: str,
     dense_hits: list[dict],
+    lexical_hits: list[dict] | None,
     k: int,
     rrf_k: int,
 ) -> tuple[list[dict], str]:
-    """BM25 + RRF + ranked rows + log JSON (CPU-bound; one ``to_thread``)."""
-    _search_bm25(query, dense_hits)
-    merged = _fuse_rrf(dense_hits, dense_hits, k_final=k, rrf_k=rrf_k)
+    """RRF fusion + ranked rows + log JSON (CPU-bound; one ``to_thread``)."""
+    bm25_hits = _prepare_bm25_hits(query, dense_hits, lexical_hits)
+    merged = _fuse_rrf(dense_hits, bm25_hits, k_final=k, rrf_k=rrf_k)
     out = [
         {
             "rank": rank,
@@ -181,9 +217,10 @@ async def query_chunks(
     client: AsyncQdrantClient | None = None,
     query_vector: list[float] | None = None,
     qdrant_limit_override: int | None = None,
+    lexical_retriever: LexicalRetriever | None = None,
 ) -> list[dict]:
     """
-    Hybrid retrieval: dense + BM25 + RRF fusion.
+    Hybrid retrieval: dense + lexical + RRF fusion.
 
     Args:
         query: Search query text.
@@ -200,9 +237,13 @@ async def query_chunks(
         client: Use this ``AsyncQdrantClient`` (caller manages lifecycle; skips creating one).
         query_vector: If set, use for dense search and do not call the embedding API for this query.
         qdrant_limit_override: If set, Qdrant dense ``limit`` is ``max(top_k_dense, override)``.
+        lexical_retriever: Optional independent lexical retriever ``(query, k) -> list[dict]``.
+            Each returned hit should include ``chunk_id`` and either ``bm25_rank`` or
+            ``bm25_score``. When omitted, BM25 is computed only on dense candidates
+            (fallback mode, not full-corpus lexical retrieval).
 
     1. Dense: embed query (unless ``query_vector``) → Qdrant vector search
-    2. BM25: rank those hits with BM25
+    2. Lexical: use ``lexical_retriever`` results, or BM25-over-dense fallback
     3. RRF: fuse both rankings, return top k
     """
     with bind_request_context(request_id, session_id):
@@ -235,16 +276,22 @@ async def query_chunks(
                 logger.info("query_chunks done dense_hits=0 returned=0")
                 return []
 
+            lexical_hits: list[dict] | None = None
+            if lexical_retriever is not None:
+                lexical_hits = await lexical_retriever(query, dense_limit)
+
             out, log_out = await asyncio.to_thread(
                 _fusion_pack_and_log_line,
                 query,
                 dense_hits,
+                lexical_hits,
                 k,
                 rrf_k,
             )
             logger.info(
-                "query_chunks ok dense_candidates=%s returned=%s out=%s",
+                "query_chunks ok dense_candidates=%s lexical_candidates=%s returned=%s out=%s",
                 len(dense_hits),
+                len(lexical_hits or []),
                 len(out),
                 log_out,
             )
