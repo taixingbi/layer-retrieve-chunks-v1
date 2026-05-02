@@ -31,6 +31,9 @@ class AnswerFromInferenceBody(BaseModel):
     k_max: int = Field(default=40, ge=1)
     max_tokens: int | None = None
     expand_on_not_found: bool = True
+    rerank_top_n: int | None = Field(default=None, ge=1)
+    final_context_top_k: int | None = Field(default=None, ge=1)
+    use_reranker: bool = True
 
 
 async def answer_from_inference_payload_async(
@@ -48,6 +51,9 @@ async def answer_from_inference_payload_async(
         k_max=body.k_max,
         max_tokens=body.max_tokens,
         expand_on_not_found=body.expand_on_not_found,
+        rerank_top_n=body.rerank_top_n,
+        final_context_top_k=body.final_context_top_k,
+        use_reranker=body.use_reranker,
     )
     return {"answer": answer, "citations": citations}
 
@@ -100,6 +106,9 @@ def answer_from_inference(
     k_max: int = 40,
     max_tokens: int | None = None,
     expand_on_not_found: bool = True,
+    rerank_top_n: int | None = None,
+    final_context_top_k: int | None = None,
+    use_reranker: bool = True,
 ) -> dict[str, Any]:
     """Retrieve once (pool k_max), then chat; optional slice widen on NOT_FOUND. Set expand_on_not_found false for single-pass eval."""
     answer, citations = run_async(
@@ -112,6 +121,9 @@ def answer_from_inference(
             k_max=k_max,
             max_tokens=max_tokens,
             expand_on_not_found=expand_on_not_found,
+            rerank_top_n=rerank_top_n,
+            final_context_top_k=final_context_top_k,
+            use_reranker=use_reranker,
         )
     )
     return {"answer": answer, "citations": citations}

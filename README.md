@@ -142,6 +142,7 @@ curl -sS -X POST http://127.0.0.1:8000/v1/rag/query \
 ```
 
 Response: `answer` is model text (with inline `[n]` citations); `citations` lists only passages actually cited in `answer` (`cite_id`, `chunk_id`, `source`, `text`). Optional body field: `"max_tokens": 512` .
+Optional rerank controls: `"rerank_top_n": 50`, `"final_context_top_k": 10`, `"use_reranker": true`.
 
 **Cursor** (`.cursor/mcp.json` or global MCP settings): point the server at the repo root so `.env` resolves; use your venv’s `python` if needed:
 
@@ -160,7 +161,7 @@ CLI: `fastmcp run main.py:mcp`
 
 ## RAG + inference (chat API)
 
-End-to-end: **hybrid retrieval** (`query_chunks` in `app/retrieval.py`; Qdrant client setup in `app/qdrant/client.py`) → **prompt** → OpenAI-compatible **`POST /v1/chat/completions`** (e.g. Qwen on port 30080).
+End-to-end: **hybrid retrieval** (`query_chunks` in `app/retrieval.py`; Qdrant client setup in `app/qdrant/client.py`) → optional **rerank** (`POST /v1/rerank`) → **prompt** → OpenAI-compatible **`POST /v1/chat/completions`** (e.g. Qwen on port 30080).
 
 ```bash
 # Or set INFERENCE_URL / INFERENCE_MODEL in `.env` (see `.env.example`)

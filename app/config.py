@@ -5,7 +5,8 @@ The project root ``.env`` must exist and define every name in ``REQUIRED_ENV_VAR
 be empty where allowed). Pass ``request_id`` and ``session_id`` into ``embed_text`` / ``query_chunks``
 for embedding ``X-Request-Id`` and ``X-Session-Id``.
 
-Optional: ``INFERENCE_URL``, ``INFERENCE_MODEL``, ``INFERENCE_MAX_TOKENS`` (see ``get_inference_*``).
+Optional: ``INFERENCE_URL``, ``INFERENCE_MODEL``, ``INFERENCE_MAX_TOKENS``,
+``RERANK_URL``, ``RERANK_MODEL``, ``RERANK_TOP_N``, ``FINAL_CONTEXT_TOP_K`` (see getters).
 """
 from pathlib import Path
 
@@ -91,6 +92,10 @@ VECTOR_SIZE = int(os.environ["VECTOR_SIZE"])
 _DEFAULT_INFERENCE_URL = "http://192.168.86.179:30080"
 _DEFAULT_INFERENCE_MODEL = "Qwen/Qwen2.5-7B-Instruct"
 _DEFAULT_INFERENCE_MAX_TOKENS = 512
+_DEFAULT_RERANK_URL = "http://localhost:30080"
+_DEFAULT_RERANK_MODEL = "BAAI/bge-reranker-v2-m3"
+_DEFAULT_RERANK_TOP_N = 50
+_DEFAULT_FINAL_CONTEXT_TOP_K = 10
 
 
 def get_inference_url() -> str:
@@ -106,3 +111,23 @@ def get_inference_model() -> str:
 def get_inference_max_tokens() -> int:
     """Default max output tokens for chat. Optional ``INFERENCE_MAX_TOKENS`` in ``.env``."""
     return int(os.environ.get("INFERENCE_MAX_TOKENS", str(_DEFAULT_INFERENCE_MAX_TOKENS)))
+
+
+def get_rerank_url() -> str:
+    """OpenAI-compatible rerank base URL (no trailing slash). Optional in ``.env``."""
+    return os.environ.get("RERANK_URL", _DEFAULT_RERANK_URL).rstrip("/")
+
+
+def get_rerank_model() -> str:
+    """Reranker model name for ``/v1/rerank``. Optional in ``.env``."""
+    return os.environ.get("RERANK_MODEL", _DEFAULT_RERANK_MODEL)
+
+
+def get_rerank_top_n() -> int:
+    """Candidates to rerank before final context selection. Optional in ``.env``."""
+    return int(os.environ.get("RERANK_TOP_N", str(_DEFAULT_RERANK_TOP_N)))
+
+
+def get_final_context_top_k() -> int:
+    """Final passages sent to chat after rerank. Optional in ``.env``."""
+    return int(os.environ.get("FINAL_CONTEXT_TOP_K", str(_DEFAULT_FINAL_CONTEXT_TOP_K)))

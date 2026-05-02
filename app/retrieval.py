@@ -288,10 +288,19 @@ async def query_chunks(
                 k,
                 rrf_k,
             )
+            # BM25 always participates: either from ``lexical_retriever`` hits or
+            # BM25-over-dense fallback (``lexical_hits is None``). Log pool size, not len(None).
+            if lexical_hits is not None:
+                lexical_n = len(lexical_hits)
+                lexical_mode = "retriever"
+            else:
+                lexical_n = len(dense_hits)
+                lexical_mode = "bm25_on_dense"
             logger.info(
-                "query_chunks ok dense_candidates=%s lexical_candidates=%s returned=%s out=%s",
+                "query_chunks ok dense_candidates=%s lexical_candidates=%s lexical_mode=%s returned=%s out=%s",
                 len(dense_hits),
-                len(lexical_hits or []),
+                lexical_n,
+                lexical_mode,
                 len(out),
                 log_out,
             )

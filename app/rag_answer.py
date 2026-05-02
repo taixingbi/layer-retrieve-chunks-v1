@@ -22,10 +22,19 @@ import uuid
 
 import httpx
 
-from app.config import get_inference_max_tokens, get_inference_model, get_inference_url
+from app.config import (
+    get_final_context_top_k,
+    get_inference_max_tokens,
+    get_inference_model,
+    get_inference_url,
+    get_rerank_model,
+    get_rerank_top_n,
+    get_rerank_url,
+)
 from app.asyncio_util import run_async
 from app.http.embed import embed_text
 from app.http.inference import chat_complete
+from app.http.rerank import rerank_texts
 from app.logging_config import logger
 from app.retrieval import query_chunks
 from app.request_context import bind_request_context
@@ -99,6 +108,35 @@ def _with_citations(answer: str, citations: list[dict]) -> tuple[str, list[dict]
     return answer, _citations_used_in_answer(answer, citations)
 
 
+async def _rerank_chunks(
+    *,
+    question: str,
+    chunks: list[dict],
+    rerank_url: str,
+    rerank_model: str,
+    final_top_k: int,
+) -> list[dict]:
+    if not chunks:
+        return []
+    rows = await rerank_texts(
+        base_url=rerank_url,
+        model=rerank_model,
+        query=question,
+        documents=[(c.get("text") or "") for c in chunks],
+        top_n=min(final_top_k, len(chunks)),
+    )
+    out: list[dict] = []
+    for rank, row in enumerate(rows, start=1):
+        idx = row.get("index", -1)
+        if not isinstance(idx, int) or idx < 0 or idx >= len(chunks):
+            continue
+        doc = dict(chunks[idx])
+        doc["rerank_score"] = float(row.get("score", 0.0))
+        doc["rerank_rank"] = rank
+        out.append(doc)
+    return out
+
+
 async def complete_rag_answer(
     question: str,
     collection_base: str,
@@ -109,6 +147,9 @@ async def complete_rag_answer(
     k_max: int = 40,
     max_tokens: int | None = None,
     expand_on_not_found: bool = True,
+    rerank_top_n: int | None = None,
+    final_context_top_k: int | None = None,
+    use_reranker: bool = True,
 ) -> tuple[str, list[dict]]:
     """
     ``query_chunks`` → numbered context → ``POST .../v1/chat/completions``.
@@ -125,13 +166,23 @@ async def complete_rag_answer(
     """
     if max_tokens is None:
         max_tokens = get_inference_max_tokens()
+    if rerank_top_n is None:
+        rerank_top_n = get_rerank_top_n()
+    if final_context_top_k is None:
+        final_context_top_k = get_final_context_top_k()
     infer_base = get_inference_url()
     model = get_inference_model()
+    rerank_base = get_rerank_url()
+    rerank_model = get_rerank_model()
 
     if k < 1:
         raise ValueError("k must be at least 1.")
     if k_max < k:
         raise ValueError("k_max must be >= k.")
+    if rerank_top_n < 1:
+        raise ValueError("rerank_top_n must be >= 1.")
+    if final_context_top_k < 1:
+        raise ValueError("final_context_top_k must be >= 1.")
 
     system_msg = {
         "role": "system",
@@ -147,31 +198,59 @@ async def complete_rag_answer(
 
     with bind_request_context(request_id, session_id):
         logger.info(
-            "complete_rag_answer start collection_base=%s k=%s k_max=%s",
+            "complete_rag_answer start collection_base=%s k=%s k_max=%s rerank_top_n=%s final_top_k=%s use_reranker=%s",
             collection_base,
             k,
             k_max,
+            rerank_top_n,
+            final_context_top_k,
+            use_reranker,
         )
         query_vector = await embed_text(
             question, request_id=request_id, session_id=session_id
         )
+        retrieve_pool = max(k_max, rerank_top_n)
         chunks_full = await query_chunks(
             question,
             collection_base,
-            k=k_max,
+            k=retrieve_pool,
             request_id=request_id,
             session_id=session_id,
             query_vector=query_vector,
-            qdrant_limit_override=k_max,
+            qdrant_limit_override=retrieve_pool,
         )
         if not chunks_full:
             raise ValueError("No chunks retrieved for this query.")
 
-        current_k = min(k, len(chunks_full))
+        candidate_chunks = chunks_full[: min(rerank_top_n, len(chunks_full))]
+        if use_reranker:
+            try:
+                reranked = await _rerank_chunks(
+                    question=question,
+                    chunks=candidate_chunks,
+                    rerank_url=rerank_base,
+                    rerank_model=rerank_model,
+                    final_top_k=final_context_top_k,
+                )
+                if reranked:
+                    candidate_chunks = reranked
+                logger.info(
+                    "complete_rag_answer rerank applied candidates=%s selected=%s",
+                    len(chunks_full),
+                    len(candidate_chunks),
+                )
+            except Exception as e:
+                logger.warning(
+                    "complete_rag_answer rerank fallback reason=%s",
+                    str(e),
+                )
+        candidate_chunks = candidate_chunks[:final_context_top_k]
+
+        current_k = min(k, len(candidate_chunks))
         last_answer = ""
         last_citations: list[dict] = []
         while True:
-            chunks = chunks_full[:current_k]
+            chunks = candidate_chunks[:current_k]
 
             context, last_citations = _build_numbered_context(chunks)
             messages = [
@@ -200,7 +279,7 @@ async def complete_rag_answer(
                 )
                 return _with_citations(last_answer, last_citations)
 
-            next_k = min(current_k * 2, k_max, len(chunks_full))
+            next_k = min(current_k * 2, final_context_top_k, len(candidate_chunks))
             if next_k <= current_k:
                 logger.info(
                     "complete_rag_answer done needs_more_context k_used=%s",
@@ -243,6 +322,23 @@ def main(argv: list[str] | None = None) -> int:
         type=int,
         default=get_inference_max_tokens(),
     )
+    p.add_argument(
+        "--rerank-top-n",
+        type=int,
+        default=get_rerank_top_n(),
+        help="RRF candidate pool sent to reranker.",
+    )
+    p.add_argument(
+        "--final-top-k",
+        type=int,
+        default=get_final_context_top_k(),
+        help="Final passage count after reranking.",
+    )
+    p.add_argument(
+        "--no-reranker",
+        action="store_true",
+        help="Skip reranker and use fused order directly.",
+    )
     args = p.parse_args(argv)
 
     rid = os.environ.get("RAG_REQUEST_ID") or str(uuid.uuid4())
@@ -259,6 +355,9 @@ def main(argv: list[str] | None = None) -> int:
                 k_max=args.k_max,
                 max_tokens=args.max_tokens,
                 expand_on_not_found=not args.single_pass,
+                rerank_top_n=args.rerank_top_n,
+                final_context_top_k=args.final_top_k,
+                use_reranker=not args.no_reranker,
             )
         )
     except ValueError as e:
