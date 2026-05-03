@@ -25,6 +25,7 @@ class _LokiClientNoSystemProxy(LokiClient):
     _opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
     def _send(self, body: bytes) -> None:
+        """POST compressed log payload to Loki without using system HTTP(S) proxy settings."""
         req = urllib.request.Request(
             self.endpoint,
             data=body,
@@ -45,6 +46,7 @@ class _LokiClientNoSystemProxy(LokiClient):
 
 
 def _loki_client_cls() -> type[LokiClient]:
+    """Return ``LokiClient`` or proxy-bypassing subclass when ``LOKI_IGNORE_SYSTEM_PROXY`` is truthy."""
     v = os.getenv("LOKI_IGNORE_SYSTEM_PROXY", "").strip().lower()
     if v in ("1", "true", "yes", "on"):
         return _LokiClientNoSystemProxy
@@ -101,6 +103,7 @@ class _SyncLokiHandler(logging.Handler):
         basic_auth: tuple[str, str],
         timeout: int = 15,
     ) -> None:
+        """Build a Loki client with static stream labels and Grafana basic auth."""
         super().__init__()
         self._client = _loki_client_cls()(
             labels=labels,
@@ -109,6 +112,7 @@ class _SyncLokiHandler(logging.Handler):
         )
 
     def emit(self, record: logging.LogRecord) -> None:
+        """Format ``record`` as JSON and push to Loki; swallow failures after capped stderr notices."""
         global _LOKI_PUSH_ERRORS_LOGGED
         try:
             level = _LOKI_LEVEL.get(record.levelname, "info")
@@ -132,7 +136,10 @@ class _SyncLokiHandler(logging.Handler):
 
 
 class _RequestContextFilter(logging.Filter):
+    """Attach request/session IDs and HTTP method/path/status from context onto each ``LogRecord``."""
+
     def filter(self, record: logging.LogRecord) -> bool:
+        """Populate correlation and HTTP fields; always return True so the record is emitted."""
         rid = get_request_id()
         sid = get_session_id()
         # Outside request context, ids default to "-".
@@ -155,6 +162,7 @@ class _JsonFormatter(logging.Formatter):
     """One JSON object per line for stderr and Loki."""
 
     def format(self, record: logging.LogRecord) -> str:
+        """Serialize ``record`` to a single JSON line; include ``error`` only when ``exc_info`` is set."""
         payload: dict[str, object] = {
             "ts": datetime.fromtimestamp(record.created, tz=_LOG_TZ).isoformat(),
             "request_id": getattr(record, "request_id", "-"),
@@ -163,10 +171,9 @@ class _JsonFormatter(logging.Formatter):
             "path": getattr(record, "path", "-"),
             "status": getattr(record, "status", "-"),
             "message": record.getMessage(),
-            "error": self.formatException(record.exc_info)
-            if record.exc_info
-            else None,
         }
+        if record.exc_info:
+            payload["error"] = self.formatException(record.exc_info)
         for key in _EXTRA_JSON_FIELDS:
             if hasattr(record, key):
                 payload[key] = getattr(record, key)
@@ -181,6 +188,7 @@ _loki_worker_handler: _SyncLokiHandler | None = None
 
 
 def setup_logging() -> None:
+    """Configure ``layer_rag.query`` logger: stderr JSON, optional Loki queue + worker when Grafana env is set."""
     global _loki_listener, _loki_queue_handler, _loki_worker_handler
     load_dotenv(_ENV_PATH)
 
@@ -227,6 +235,7 @@ def setup_logging() -> None:
 
 
 def shutdown_logging() -> None:
+    """Stop the Loki queue listener and detach Loki handlers (safe to call if Loki was never enabled)."""
     global _loki_listener, _loki_queue_handler, _loki_worker_handler
     if _loki_listener is not None:
         _loki_listener.stop()

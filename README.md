@@ -20,14 +20,13 @@ Create `.env` in the project root (loaded automatically on `import app`) or expo
 cp .env.example .env
 ```
 
-Importing `app` raises `ValueError` if any required variable below is missing from the environment. Empty values are allowed for `QDRANT_API_KEY` and `EMBEDDING_INTERNAL_KEY`; gated embedding APIs need a real `EMBEDDING_INTERNAL_KEY` (sent as `X-Internal-Key`, same as curl). You must pass non-empty `request_id` and `session_id` to `embed_text` / `query_chunks` for `X-Request-Id` and `X-Session-Id` (no auto-UUIDs).
+Importing `app` raises `ValueError` if any required variable below is missing from the environment. Empty values are allowed for `QDRANT_API_KEY`. You must pass non-empty `request_id` and `session_id` to `embed_text` / `query_chunks` for `X-Request-Id` and `X-Session-Id` (no auto-UUIDs).
 
 | Variable | Description |
 |----------|-------------|
 | `QDRANT_URL` | Qdrant HTTP URL |
 | `QDRANT_API_KEY` | Qdrant API key (empty for local / no auth) |
 | `EMBEDDING_URL` | Embedding API base URL (`/v1/embeddings` is appended) |
-| `EMBEDDING_INTERNAL_KEY` | Sent as `X-Internal-Key` when non-empty |
 | `EMBEDDING_MODEL` | Model id in the request body |
 | `VECTOR_SIZE` | Expected embedding length (must match the model) |
 | `ENV` | Deploy/stage suffix for Qdrant: ``dev`` / ``qa`` / ``prod`` — ``query_chunks`` uses ``{collection_name}_{ENV}``. Use empty value for no suffix |
@@ -52,7 +51,6 @@ Load variables from `.env` (or substitute literals). Use these to verify each de
 set -a && source .env && set +a   # or: export EMBEDDING_URL=... etc.
 
 curl -sS -X POST "${EMBEDDING_URL}/v1/embeddings" \
-  -H "X-Internal-Key: ${EMBEDDING_INTERNAL_KEY}" \
   -H "X-Request-Id: request_id_1" \
   -H "X-Session-Id: session_id_1" \
   -H "Content-Type: application/json" \

@@ -21,7 +21,6 @@ REQUIRED_ENV_VARS: tuple[str, ...] = (
     "QDRANT_URL",
     "QDRANT_API_KEY",
     "EMBEDDING_URL",
-    "EMBEDDING_INTERNAL_KEY",
     "EMBEDDING_MODEL",
     "VECTOR_SIZE",
     "ENV",
@@ -82,10 +81,6 @@ def get_embedding_url() -> str:
 
 def get_embedding_model() -> str:
     return os.environ["EMBEDDING_MODEL"]
-
-
-def get_embedding_internal_key() -> str:
-    return os.environ["EMBEDDING_INTERNAL_KEY"]
 
 
 def get_env() -> str:

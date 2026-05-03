@@ -3,7 +3,6 @@ import httpx
 
 from app.config import (
     VECTOR_SIZE,
-    get_embedding_internal_key,
     get_embedding_model,
     get_embedding_url,
 )
@@ -22,16 +21,12 @@ def _require_trace_ids(request_id: str, session_id: str) -> tuple[str, str]:
 
 
 def _request_headers(*, request_id: str, session_id: str) -> dict[str, str]:
-    """Embedding gateway: X-Internal-Key (if set), X-Request-Id, X-Session-Id."""
+    """Embedding gateway: X-Request-Id, X-Session-Id."""
     rid, sid = _require_trace_ids(request_id, session_id)
-    h: dict[str, str] = {
+    return {
         "X-Request-Id": rid,
         "X-Session-Id": sid,
     }
-    key = get_embedding_internal_key()
-    if key:
-        h["X-Internal-Key"] = key
-    return h
 
 
 async def embed_text(
