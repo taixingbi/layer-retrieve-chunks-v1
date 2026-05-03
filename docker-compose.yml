@@ -3,16 +3,17 @@
 # from the container (LAN IP, cluster DNS, or host.docker.internal).
 services:
   rag-query:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: layer-rag-query:local
+    image: layer-rag-query-v1
+    build: .
+    container_name: layer-rag-query-v1
+    restart: unless-stopped
+    labels:
+      com.layer.service: layer-rag-query-v1
     ports:
       - "8000:8000"
     env_file:
       - .env
     environment:
       HTTP_PORT: "8000"
-    restart: unless-stopped
     extra_hosts:
       - "host.docker.internal:host-gateway"
