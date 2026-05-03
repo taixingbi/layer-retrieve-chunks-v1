@@ -1,0 +1,28 @@
+# Git and CI
+.git
+.github
+
+# Local Python / tooling
+.venv
+venv
+__pycache__
+*.py[cod]
+*$py.class
+.pytest_cache
+.mypy_cache
+.ruff_cache
+
+# Secrets (use compose `env_file` / k8s env at runtime; never bake `.env` into the image)
+.env
+
+# Build / packaging
+dist
+*.egg-info
+*.egg
+uv.lock
+
+# Project noise / large paths not needed in the image
+tmp.md
+eva
+examples
+.cursor

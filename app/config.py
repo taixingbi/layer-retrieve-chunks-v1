@@ -31,23 +31,31 @@ REQUIRED_ENV_VARS: tuple[str, ...] = (
 
 
 def _ensure_dotenv() -> None:
-    if not _ENV_PATH.is_file():
-        raise FileNotFoundError(
-            f"Missing `.env` at {_ENV_PATH}. Copy `.env.example` to `.env` and set each variable."
-        )
-    file_vals = dotenv_values(_ENV_PATH)
-    missing_file = [k for k in REQUIRED_ENV_VARS if k not in file_vals]
-    if missing_file:
-        raise ValueError(
-            "`.env` is missing required keys. "
-            f"Add: {', '.join(sorted(missing_file))}. See `.env.example`."
-        )
-    load_dotenv(_ENV_PATH)
+    """Load ``.env`` from project root, or accept variables already set (Docker / k8s)."""
+    if _ENV_PATH.is_file():
+        file_vals = dotenv_values(_ENV_PATH)
+        missing_file = [k for k in REQUIRED_ENV_VARS if k not in file_vals]
+        if missing_file:
+            raise ValueError(
+                "`.env` is missing required keys. "
+                f"Add: {', '.join(sorted(missing_file))}. See `.env.example`."
+            )
+        load_dotenv(_ENV_PATH)
+        missing_env = [k for k in REQUIRED_ENV_VARS if k not in os.environ]
+        if missing_env:
+            raise ValueError(
+                "Required variables were not loaded into the environment after reading `.env`. "
+                f"Check for syntax errors in `{_ENV_PATH}`. Missing: {', '.join(sorted(missing_env))}"
+            )
+        return
+
+    # No on-disk `.env` (e.g. Docker Compose `env_file`, k3s Secrets → env): require full set in os.environ.
     missing_env = [k for k in REQUIRED_ENV_VARS if k not in os.environ]
     if missing_env:
         raise ValueError(
-            "Required variables were not loaded into the environment after reading `.env`. "
-            f"Check for syntax errors in `{_ENV_PATH}`. Missing: {', '.join(sorted(missing_env))}"
+            f"No `.env` file at {_ENV_PATH} and the following required variables are unset in the "
+            f"environment: {', '.join(sorted(missing_env))}. Copy `.env.example` to `.env`, or inject "
+            "these keys via your orchestrator."
         )
 
 

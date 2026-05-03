@@ -1,0 +1,18 @@
+# RAG MCP + HTTP API (FastMCP). `env_file` injects variables; no `.env` file is required inside the image
+# (see `app.config` when the file is absent). Qdrant / embed / rerank / inference URLs must be reachable
+# from the container (LAN IP, cluster DNS, or host.docker.internal).
+services:
+  rag-query:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: layer-rag-query:local
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      HTTP_PORT: "8000"
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
