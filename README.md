@@ -124,7 +124,7 @@ source .venv/bin/activate
 fastmcp run main.py:mcp --transport http --port 8000
 ```
 
-On **HTTP** transport, **MCP** clients use `http://127.0.0.1:8000/mcp` . The same process also serves **`POST http://127.0.0.1:8000/v1/rag/query`** (JSON body; response `{"answer":"...","citations":[{"cite_id":1,"chunk_id":"...","source":"...","text":"..."},...]}` ) for plain `curl` scripts.
+On **HTTP** transport, **MCP** clients use `http://127.0.0.1:8000/mcp` . The same process also serves **`POST http://127.0.0.1:8000/v1/rag/query`** (JSON body; response includes `answer`, `citations`, and `follow_up_questions` — a list of up to three suggested follow-up questions) for plain `curl` scripts.
 
 ```bash
 curl -sS -X POST http://127.0.0.1:8000/v1/rag/query \
@@ -139,8 +139,7 @@ curl -sS -X POST http://127.0.0.1:8000/v1/rag/query \
   }'
 ```
 
-Response: `answer` is model text (with inline `[n]` citations); `citations` lists only passages actually cited in `answer` (`cite_id`, `chunk_id`, `source`, `text`). Optional body field: `"max_tokens": 512` .
-Optional rerank controls: `"rerank_top_n": 50`, `"final_context_top_k": 10`, `"use_reranker": true`.
+Response: `answer` is model text (with inline `[n]` citations); `citations` lists only passages actually cited in `answer` (`cite_id`, `chunk_id`, `source`, `text`). `follow_up_questions` is always present (possibly `[]`): strings produced by a short second chat call then trimmed by the reranker. Optional body fields: `"max_tokens": 512`, rerank controls `"rerank_top_n": 50`, `"final_context_top_k": 10`, `"use_reranker": true`, and follow-up controls `"include_follow_up_questions": true` (default), `"follow_up_candidates": 8` (3–12), `"follow_up_final": 3` (must be `<= follow_up_candidates`).
 
 **Cursor** (`.cursor/mcp.json` or global MCP settings): point the server at the repo root so `.env` resolves; use your venv’s `python` if needed:
 

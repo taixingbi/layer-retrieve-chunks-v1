@@ -11,7 +11,7 @@ from typing import Any
 
 import httpx
 from fastmcp import FastMCP
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, model_validator
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
@@ -34,6 +34,15 @@ class AnswerFromInferenceBody(BaseModel):
     rerank_top_n: int | None = Field(default=None, ge=1)
     final_context_top_k: int | None = Field(default=None, ge=1)
     use_reranker: bool = True
+    include_follow_up_questions: bool = True
+    follow_up_candidates: int = Field(default=8, ge=3, le=12)
+    follow_up_final: int = Field(default=3, ge=1, le=8)
+
+    @model_validator(mode="after")
+    def _follow_up_final_lte_candidates(self) -> AnswerFromInferenceBody:
+        if self.follow_up_final > self.follow_up_candidates:
+            raise ValueError("follow_up_final must be <= follow_up_candidates")
+        return self
 
 
 async def answer_from_inference_payload_async(
@@ -42,7 +51,7 @@ async def answer_from_inference_payload_async(
     """Run RAG + chat (async). Raise ``ValueError`` or ``httpx.HTTPStatusError`` on failure."""
     if body.k_max < body.k:
         raise ValueError("k_max must be >= k")
-    answer, citations = await complete_rag_answer(
+    answer, citations, follow_up_questions = await complete_rag_answer(
         body.question,
         body.collection_base,
         body.request_id,
@@ -54,8 +63,15 @@ async def answer_from_inference_payload_async(
         rerank_top_n=body.rerank_top_n,
         final_context_top_k=body.final_context_top_k,
         use_reranker=body.use_reranker,
+        include_follow_up_questions=body.include_follow_up_questions,
+        follow_up_candidates=body.follow_up_candidates,
+        follow_up_final=body.follow_up_final,
     )
-    return {"answer": answer, "citations": citations}
+    return {
+        "answer": answer,
+        "citations": citations,
+        "follow_up_questions": follow_up_questions,
+    }
 
 
 mcp = FastMCP(
@@ -109,9 +125,14 @@ def answer_from_inference(
     rerank_top_n: int | None = None,
     final_context_top_k: int | None = None,
     use_reranker: bool = True,
+    include_follow_up_questions: bool = True,
+    follow_up_candidates: int = 8,
+    follow_up_final: int = 3,
 ) -> dict[str, Any]:
     """Retrieve once (pool k_max), then chat; optional slice widen on NOT_FOUND. Set expand_on_not_found false for single-pass eval."""
-    answer, citations = run_async(
+    if follow_up_final > follow_up_candidates:
+        raise ValueError("follow_up_final must be <= follow_up_candidates")
+    answer, citations, follow_up_questions = run_async(
         complete_rag_answer(
             question,
             collection_base,
@@ -124,9 +145,16 @@ def answer_from_inference(
             rerank_top_n=rerank_top_n,
             final_context_top_k=final_context_top_k,
             use_reranker=use_reranker,
+            include_follow_up_questions=include_follow_up_questions,
+            follow_up_candidates=follow_up_candidates,
+            follow_up_final=follow_up_final,
         )
     )
-    return {"answer": answer, "citations": citations}
+    return {
+        "answer": answer,
+        "citations": citations,
+        "follow_up_questions": follow_up_questions,
+    }
 
 
 @mcp.custom_route("/v1/rag/query", methods=["POST"])

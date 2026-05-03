@@ -40,6 +40,184 @@ from app.retrieval import query_chunks
 from app.request_context import bind_request_context
 
 _NOT_FOUND_REPLY = "NOT_FOUND"
+_FOLLOW_UP_GEN_MAX_TOKENS_CAP = 512
+
+
+def _context_summary_for_followups(chunks: list[dict], *, max_chars: int = 3500) -> str:
+    """Compact lines (source + truncated text) for follow-up generation prompts."""
+    lines: list[str] = []
+    size = 0
+    for c in chunks:
+        src = (c.get("source") or "").strip() or "(unknown)"
+        text = (c.get("text") or "").strip().replace("\n", " ")
+        if len(text) > 220:
+            text = text[:220] + "…"
+        line = f"- {src}: {text}"
+        if size + len(line) + 1 > max_chars:
+            break
+        lines.append(line)
+        size += len(line) + 1
+    return "\n".join(lines) if lines else "(no context)"
+
+
+def _parse_follow_up_json(raw: str) -> list[str]:
+    """Parse model output into a list of non-empty question strings."""
+    text = raw.strip()
+    if not text:
+        return []
+    if "```" in text:
+        low = text.lower()
+        if "```json" in low:
+            start = low.find("```json") + 7
+            end = text.find("```", start)
+            if end != -1:
+                text = text[start:end].strip()
+        else:
+            start = text.find("```") + 3
+            end = text.find("```", start)
+            if end != -1:
+                text = text[start:end].strip()
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        i0 = text.find("[")
+        i1 = text.rfind("]")
+        if i0 == -1 or i1 <= i0:
+            return []
+        try:
+            data = json.loads(text[i0 : i1 + 1])
+        except json.JSONDecodeError:
+            return []
+    if not isinstance(data, list):
+        return []
+    out: list[str] = []
+    for x in data:
+        if isinstance(x, str) and (s := x.strip()):
+            out.append(s)
+    return out
+
+
+async def _generate_follow_up_candidates(
+    *,
+    question: str,
+    answer: str,
+    context_summary: str,
+    infer_base: str,
+    model: str,
+    min_count: int,
+    max_count: int,
+    max_tokens: int,
+) -> list[str]:
+    """One chat call: JSON array of between ``min_count`` and ``max_count`` question strings."""
+    sys = (
+        "You write only valid JSON: a single array of strings. No markdown, no keys, no commentary. "
+        f"Each string is one short follow-up question (under 120 characters). "
+        f"Produce between {min_count} and {max_count} distinct questions. "
+        "Questions must be answerable from the same knowledge domain as the context summary; "
+        "they may extend or refine the user's topic. Do not repeat the original question verbatim."
+    )
+    user = (
+        f"Original question:\n{question}\n\n"
+        f"Answer that was given:\n{answer}\n\n"
+        f"Context summary (retrieved passages):\n{context_summary}\n\n"
+        f"Output a JSON array of {min_count} to {max_count} follow-up questions."
+    )
+    raw = await chat_complete(
+        base_url=infer_base,
+        model=model,
+        messages=[{"role": "system", "content": sys}, {"role": "user", "content": user}],
+        max_tokens=max_tokens,
+    )
+    return _parse_follow_up_json(raw)
+
+
+async def _rerank_follow_up_strings(
+    *,
+    question: str,
+    candidates: list[str],
+    rerank_url: str,
+    rerank_model: str,
+    top_n: int,
+) -> list[str]:
+    """Rerank candidate questions; return top ``top_n`` strings in score order."""
+    if not candidates:
+        return []
+    n = min(top_n, len(candidates))
+    try:
+        rows = await rerank_texts(
+            base_url=rerank_url,
+            model=rerank_model,
+            query=question,
+            documents=candidates,
+            top_n=len(candidates),
+        )
+    except Exception as e:
+        logger.warning("follow_up rerank failed reason=%s", str(e))
+        return candidates[:n]
+    out: list[str] = []
+    seen: set[int] = set()
+    for row in rows:
+        idx = row.get("index", -1)
+        if not isinstance(idx, int) or idx < 0 or idx >= len(candidates) or idx in seen:
+            continue
+        seen.add(idx)
+        out.append(candidates[idx])
+        if len(out) >= n:
+            break
+    if len(out) < n:
+        for i, s in enumerate(candidates):
+            if i in seen:
+                continue
+            out.append(s)
+            if len(out) >= n:
+                break
+    return out if out else candidates[:n]
+
+
+async def _follow_up_questions(
+    *,
+    question: str,
+    answer: str,
+    chunks_used: list[dict],
+    follow_up_candidates: int,
+    follow_up_final: int,
+    infer_base: str,
+    model: str,
+    max_tokens_main: int,
+    rerank_url: str,
+    rerank_model: str,
+) -> list[str]:
+    if not chunks_used:
+        return []
+    min_gen = max(3, follow_up_candidates - 3)
+    max_gen = follow_up_candidates
+    if min_gen > max_gen:
+        min_gen = max_gen
+    summary = _context_summary_for_followups(chunks_used)
+    gen_budget = min(_FOLLOW_UP_GEN_MAX_TOKENS_CAP, max(256, max_tokens_main))
+    try:
+        candidates = await _generate_follow_up_candidates(
+            question=question,
+            answer=answer,
+            context_summary=summary,
+            infer_base=infer_base,
+            model=model,
+            min_count=min_gen,
+            max_count=max_gen,
+            max_tokens=gen_budget,
+        )
+    except Exception as e:
+        logger.warning("follow_up generation failed reason=%s", str(e))
+        return []
+    if not candidates:
+        return []
+    return await _rerank_follow_up_strings(
+        question=question,
+        candidates=candidates,
+        rerank_url=rerank_url,
+        rerank_model=rerank_model,
+        top_n=follow_up_final,
+    )
 
 
 def _build_numbered_context(
@@ -150,13 +328,17 @@ async def complete_rag_answer(
     rerank_top_n: int | None = None,
     final_context_top_k: int | None = None,
     use_reranker: bool = True,
-) -> tuple[str, list[dict]]:
+    include_follow_up_questions: bool = True,
+    follow_up_candidates: int = 8,
+    follow_up_final: int = 3,
+) -> tuple[str, list[dict], list[str]]:
     """
     ``query_chunks`` → numbered context → ``POST .../v1/chat/completions``.
     Uses ``get_inference_url`` / ``get_inference_model`` / ``get_inference_max_tokens`` (from ``.env`` via ``app.config``).
 
-    Returns ``(answer, citations)`` where ``citations`` lists only passages the model
+    Returns ``(answer, citations, follow_up_questions)`` where ``citations`` lists only passages the model
     referenced with ``[n]`` in ``answer`` (each item: ``cite_id``, ``chunk_id``, ``source``, ``text``).
+    ``follow_up_questions`` is empty when disabled or on failure; otherwise up to ``follow_up_final`` strings.
 
     One hybrid retrieval at ``k_max`` (query embedded once, Qdrant limit
     ``max(TOP_K_DENSE, k_max)``). NOT_FOUND / empty retries only **widen the local slice**
@@ -183,6 +365,12 @@ async def complete_rag_answer(
         raise ValueError("rerank_top_n must be >= 1.")
     if final_context_top_k < 1:
         raise ValueError("final_context_top_k must be >= 1.")
+    if follow_up_final < 1:
+        raise ValueError("follow_up_final must be at least 1.")
+    if follow_up_candidates < 3 or follow_up_candidates > 12:
+        raise ValueError("follow_up_candidates must be between 3 and 12.")
+    if follow_up_final > follow_up_candidates:
+        raise ValueError("follow_up_final must be <= follow_up_candidates.")
 
     system_msg = {
         "role": "system",
@@ -198,13 +386,17 @@ async def complete_rag_answer(
 
     with bind_request_context(request_id, session_id):
         logger.info(
-            "complete_rag_answer start collection_base=%s k=%s k_max=%s rerank_top_n=%s final_top_k=%s use_reranker=%s",
+            "complete_rag_answer start collection_base=%s k=%s k_max=%s rerank_top_n=%s final_top_k=%s "
+            "use_reranker=%s follow_ups=%s cand=%s final=%s",
             collection_base,
             k,
             k_max,
             rerank_top_n,
             final_context_top_k,
             use_reranker,
+            include_follow_up_questions,
+            follow_up_candidates,
+            follow_up_final,
         )
         query_vector = await embed_text(
             question, request_id=request_id, session_id=session_id
@@ -249,10 +441,11 @@ async def complete_rag_answer(
         current_k = min(k, len(candidate_chunks))
         last_answer = ""
         last_citations: list[dict] = []
+        chunks_for_followups: list[dict] = []
         while True:
-            chunks = candidate_chunks[:current_k]
+            chunks_for_followups = candidate_chunks[:current_k]
 
-            context, last_citations = _build_numbered_context(chunks)
+            context, last_citations = _build_numbered_context(chunks_for_followups)
             messages = [
                 system_msg,
                 {
@@ -269,15 +462,15 @@ async def complete_rag_answer(
                 max_tokens=max_tokens,
             )
             if not _answer_needs_more_context(last_answer):
-                logger.info("complete_rag_answer done k_used=%s", current_k)
-                return _with_citations(last_answer, last_citations)
+                logger.info("complete_rag_answer chat ok k_used=%s", current_k)
+                break
 
             if not expand_on_not_found:
                 logger.info(
                     "complete_rag_answer done single_pass k_used=%s (expand_on_not_found=False)",
                     current_k,
                 )
-                return _with_citations(last_answer, last_citations)
+                break
 
             next_k = min(current_k * 2, final_context_top_k, len(candidate_chunks))
             if next_k <= current_k:
@@ -285,13 +478,35 @@ async def complete_rag_answer(
                     "complete_rag_answer done needs_more_context k_used=%s",
                     current_k,
                 )
-                return _with_citations(last_answer, last_citations)
+                break
             logger.info(
                 "complete_rag_answer widen context slice %s -> %s (same retrieval pool)",
                 current_k,
                 next_k,
             )
             current_k = next_k
+
+        answer_out, citations_out = _with_citations(last_answer, last_citations)
+        follow_ups: list[str] = []
+        if include_follow_up_questions:
+            follow_ups = await _follow_up_questions(
+                question=question,
+                answer=answer_out,
+                chunks_used=chunks_for_followups,
+                follow_up_candidates=follow_up_candidates,
+                follow_up_final=follow_up_final,
+                infer_base=infer_base,
+                model=model,
+                max_tokens_main=max_tokens,
+                rerank_url=rerank_base,
+                rerank_model=rerank_model,
+            )
+        logger.info(
+            "complete_rag_answer done k_used=%s follow_up_questions=%s",
+            current_k,
+            len(follow_ups),
+        )
+        return answer_out, citations_out, follow_ups
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -339,13 +554,30 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Skip reranker and use fused order directly.",
     )
+    p.add_argument(
+        "--no-follow-ups",
+        action="store_true",
+        help="Skip follow-up question generation (no extra chat + rerank).",
+    )
+    p.add_argument(
+        "--follow-up-candidates",
+        type=int,
+        default=8,
+        help="LLM generates this many follow-up candidates (3–12) before rerank.",
+    )
+    p.add_argument(
+        "--follow-up-final",
+        type=int,
+        default=3,
+        help="Return this many follow-up questions after rerank (<= candidates).",
+    )
     args = p.parse_args(argv)
 
     rid = os.environ.get("RAG_REQUEST_ID") or str(uuid.uuid4())
     sid = os.environ.get("RAG_SESSION_ID") or str(uuid.uuid4())
 
     try:
-        answer, citations = run_async(
+        answer, citations, follow_up_questions = run_async(
             complete_rag_answer(
                 args.question,
                 args.collection,
@@ -358,6 +590,9 @@ def main(argv: list[str] | None = None) -> int:
                 rerank_top_n=args.rerank_top_n,
                 final_context_top_k=args.final_top_k,
                 use_reranker=not args.no_reranker,
+                include_follow_up_questions=not args.no_follow_ups,
+                follow_up_candidates=args.follow_up_candidates,
+                follow_up_final=args.follow_up_final,
             )
         )
     except ValueError as e:
@@ -366,7 +601,11 @@ def main(argv: list[str] | None = None) -> int:
     except httpx.HTTPStatusError as e:
         print(e.response.text, file=sys.stderr)
         return 2
-    out = {"answer": answer, "citations": citations}
+    out = {
+        "answer": answer,
+        "citations": citations,
+        "follow_up_questions": follow_up_questions,
+    }
     print(json.dumps(out, ensure_ascii=False, indent=2))
     return 0
 
