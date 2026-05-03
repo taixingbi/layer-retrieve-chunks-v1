@@ -49,6 +49,14 @@ def _elapsed_ms(since: float) -> int:
     return int(round((time.perf_counter() - since) * 1000))
 
 
+def _preview_for_log(text: str, *, max_chars: int = 400) -> str:
+    """One-line safe truncation for stderr JSON (newlines escaped)."""
+    s = text.replace("\r\n", "\n").replace("\r", "\n").replace("\n", "\\n")
+    if len(s) > max_chars:
+        return s[:max_chars] + "…"
+    return s
+
+
 def _context_summary_for_followups(chunks: list[dict], *, max_chars: int = 3500) -> str:
     """Compact lines (source + truncated text) for follow-up generation prompts."""
     lines: list[str] = []
@@ -134,7 +142,14 @@ async def _generate_follow_up_candidates(
         messages=[{"role": "system", "content": sys}, {"role": "user", "content": user}],
         max_tokens=max_tokens,
     )
-    return _parse_follow_up_json(raw)
+    candidates = _parse_follow_up_json(raw)
+    if not candidates and raw.strip():
+        logger.warning(
+            "follow_up parse produced no questions reply_chars=%s raw_preview=%s",
+            len(raw),
+            _preview_for_log(raw),
+        )
+    return candidates
 
 
 async def _rerank_follow_up_strings(
