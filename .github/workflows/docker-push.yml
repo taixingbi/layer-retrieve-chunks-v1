@@ -41,7 +41,7 @@ jobs:
           file: ./Dockerfile
           push: true
           tags: |
-            ${{ secrets.DOCKERHUB_USERNAME }}/layer-rag-query:latest
-            ${{ secrets.DOCKERHUB_USERNAME }}/layer-rag-query:${{ github.sha }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/layer-rag-query-v1:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/layer-rag-query-v1:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
