@@ -18,6 +18,7 @@ import json
 import os
 import re
 import sys
+import time
 import uuid
 
 import httpx
@@ -41,6 +42,11 @@ from app.request_context import bind_request_context
 
 _NOT_FOUND_REPLY = "NOT_FOUND"
 _FOLLOW_UP_GEN_MAX_TOKENS_CAP = 512
+
+
+def _elapsed_ms(since: float) -> int:
+    """Wall time in milliseconds from ``time.perf_counter()`` mark ``since``."""
+    return int(round((time.perf_counter() - since) * 1000))
 
 
 def _context_summary_for_followups(chunks: list[dict], *, max_chars: int = 3500) -> str:
@@ -186,15 +192,17 @@ async def _follow_up_questions(
     max_tokens_main: int,
     rerank_url: str,
     rerank_model: str,
-) -> list[str]:
+) -> tuple[list[str], int, int]:
+    """Returns ``(questions, chat_ms, rerank_ms)``; times are zero when skipped or on failure."""
     if not chunks_used:
-        return []
+        return [], 0, 0
     min_gen = max(3, follow_up_candidates - 3)
     max_gen = follow_up_candidates
     if min_gen > max_gen:
         min_gen = max_gen
     summary = _context_summary_for_followups(chunks_used)
     gen_budget = min(_FOLLOW_UP_GEN_MAX_TOKENS_CAP, max(256, max_tokens_main))
+    gen_t0 = time.perf_counter()
     try:
         candidates = await _generate_follow_up_candidates(
             question=question,
@@ -208,16 +216,19 @@ async def _follow_up_questions(
         )
     except Exception as e:
         logger.warning("follow_up generation failed reason=%s", str(e))
-        return []
+        return [], _elapsed_ms(gen_t0), 0
+    gen_ms = _elapsed_ms(gen_t0)
     if not candidates:
-        return []
-    return await _rerank_follow_up_strings(
+        return [], gen_ms, 0
+    rr_t0 = time.perf_counter()
+    ranked = await _rerank_follow_up_strings(
         question=question,
         candidates=candidates,
         rerank_url=rerank_url,
         rerank_model=rerank_model,
         top_n=follow_up_final,
     )
+    return ranked, gen_ms, _elapsed_ms(rr_t0)
 
 
 def _build_numbered_context(
@@ -331,14 +342,16 @@ async def complete_rag_answer(
     include_follow_up_questions: bool = True,
     follow_up_candidates: int = 8,
     follow_up_final: int = 3,
-) -> tuple[str, list[dict], list[str]]:
+) -> tuple[str, list[dict], list[str], dict[str, int]]:
     """
     ``query_chunks`` → numbered context → ``POST .../v1/chat/completions``.
     Uses ``get_inference_url`` / ``get_inference_model`` / ``get_inference_max_tokens`` (from ``.env`` via ``app.config``).
 
-    Returns ``(answer, citations, follow_up_questions)`` where ``citations`` lists only passages the model
+    Returns ``(answer, citations, follow_up_questions, latency_ms)`` where ``citations`` lists only passages the model
     referenced with ``[n]`` in ``answer`` (each item: ``cite_id``, ``chunk_id``, ``source``, ``text``).
     ``follow_up_questions`` is empty when disabled or on failure; otherwise up to ``follow_up_final`` strings.
+    ``latency_ms`` maps phase names to integer milliseconds (``total``, ``embed``, ``retrieve``, ``chunk_rerank``,
+    ``chat``, ``follow_up_chat``, ``follow_up_rerank``); unused phases are ``0``.
 
     One hybrid retrieval at ``k_max`` (query embedded once, Qdrant limit
     ``max(TOP_K_DENSE, k_max)``). NOT_FOUND / empty retries only **widen the local slice**
@@ -385,6 +398,7 @@ async def complete_rag_answer(
     }
 
     with bind_request_context(request_id, session_id):
+        wall_t0 = time.perf_counter()
         logger.info(
             "complete_rag_answer start collection_base=%s k=%s k_max=%s rerank_top_n=%s final_top_k=%s "
             "use_reranker=%s follow_ups=%s cand=%s final=%s",
@@ -398,10 +412,13 @@ async def complete_rag_answer(
             follow_up_candidates,
             follow_up_final,
         )
+        t_embed = time.perf_counter()
         query_vector = await embed_text(
             question, request_id=request_id, session_id=session_id
         )
+        embed_ms = _elapsed_ms(t_embed)
         retrieve_pool = max(k_max, rerank_top_n)
+        t_ret = time.perf_counter()
         chunks_full = await query_chunks(
             question,
             collection_base,
@@ -411,12 +428,15 @@ async def complete_rag_answer(
             query_vector=query_vector,
             qdrant_limit_override=retrieve_pool,
         )
+        retrieve_ms = _elapsed_ms(t_ret)
         if not chunks_full:
             raise ValueError("No chunks retrieved for this query.")
 
         candidate_chunks = chunks_full[: min(rerank_top_n, len(chunks_full))]
+        chunk_rerank_ms = 0
         if use_reranker:
             try:
+                t_rr = time.perf_counter()
                 reranked = await _rerank_chunks(
                     question=question,
                     chunks=candidate_chunks,
@@ -424,6 +444,7 @@ async def complete_rag_answer(
                     rerank_model=rerank_model,
                     final_top_k=final_context_top_k,
                 )
+                chunk_rerank_ms = _elapsed_ms(t_rr)
                 if reranked:
                     candidate_chunks = reranked
                 logger.info(
@@ -442,6 +463,7 @@ async def complete_rag_answer(
         last_answer = ""
         last_citations: list[dict] = []
         chunks_for_followups: list[dict] = []
+        chat_ms_total = 0
         while True:
             chunks_for_followups = candidate_chunks[:current_k]
 
@@ -455,12 +477,14 @@ async def complete_rag_answer(
                     ),
                 },
             ]
+            t_chat = time.perf_counter()
             last_answer = await chat_complete(
                 base_url=infer_base,
                 model=model,
                 messages=messages,
                 max_tokens=max_tokens,
             )
+            chat_ms_total += _elapsed_ms(t_chat)
             if not _answer_needs_more_context(last_answer):
                 logger.info("complete_rag_answer chat ok k_used=%s", current_k)
                 break
@@ -488,8 +512,10 @@ async def complete_rag_answer(
 
         answer_out, citations_out = _with_citations(last_answer, last_citations)
         follow_ups: list[str] = []
+        follow_up_chat_ms = 0
+        follow_up_rerank_ms = 0
         if include_follow_up_questions:
-            follow_ups = await _follow_up_questions(
+            follow_ups, follow_up_chat_ms, follow_up_rerank_ms = await _follow_up_questions(
                 question=question,
                 answer=answer_out,
                 chunks_used=chunks_for_followups,
@@ -501,12 +527,33 @@ async def complete_rag_answer(
                 rerank_url=rerank_base,
                 rerank_model=rerank_model,
             )
+        total_ms = _elapsed_ms(wall_t0)
+        latency_ms: dict[str, int] = {
+            "total": total_ms,
+            "embed": embed_ms,
+            "retrieve": retrieve_ms,
+            "chunk_rerank": chunk_rerank_ms,
+            "chat": chat_ms_total,
+            "follow_up_chat": follow_up_chat_ms,
+            "follow_up_rerank": follow_up_rerank_ms,
+        }
         logger.info(
-            "complete_rag_answer done k_used=%s follow_up_questions=%s",
+            "complete_rag_answer done k_used=%s follow_up_questions=%s latency_total_ms=%s",
             current_k,
             len(follow_ups),
+            total_ms,
+            extra={
+                "duration_ms": total_ms,
+                "latency_total_ms": total_ms,
+                "latency_embed_ms": embed_ms,
+                "latency_retrieve_ms": retrieve_ms,
+                "latency_chunk_rerank_ms": chunk_rerank_ms,
+                "latency_chat_ms": chat_ms_total,
+                "latency_follow_up_chat_ms": follow_up_chat_ms,
+                "latency_follow_up_rerank_ms": follow_up_rerank_ms,
+            },
         )
-        return answer_out, citations_out, follow_ups
+        return answer_out, citations_out, follow_ups, latency_ms
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -577,7 +624,7 @@ def main(argv: list[str] | None = None) -> int:
     sid = os.environ.get("RAG_SESSION_ID") or str(uuid.uuid4())
 
     try:
-        answer, citations, follow_up_questions = run_async(
+        answer, citations, follow_up_questions, latency_ms = run_async(
             complete_rag_answer(
                 args.question,
                 args.collection,
@@ -605,6 +652,7 @@ def main(argv: list[str] | None = None) -> int:
         "answer": answer,
         "citations": citations,
         "follow_up_questions": follow_up_questions,
+        "latency_ms": latency_ms,
     }
     print(json.dumps(out, ensure_ascii=False, indent=2))
     return 0

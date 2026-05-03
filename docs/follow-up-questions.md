@@ -11,6 +11,23 @@ After the main RAG answer and citations are produced, the pipeline can attach **
 | `answer` | string | Model reply with optional inline `[n]` citations. |
 | `citations` | array | Passages actually cited in `answer` (`cite_id`, `chunk_id`, `source`, `text`). |
 | `follow_up_questions` | array of strings | Always present; may be `[]` if disabled, on parse failure, or when generation fails. |
+| `latency_ms` | object | Always present: integer millisecond timings per phase (see below). |
+
+### `latency_ms` keys
+
+All values are non-negative integers (wall time from `time.perf_counter()`).
+
+| Key | Meaning |
+|-----|---------|
+| `total` | End-to-end time for `complete_rag_answer` (embed through follow-ups). |
+| `embed` | Query embedding HTTP call. |
+| `retrieve` | Hybrid `query_chunks` (dense + fusion). |
+| `chunk_rerank` | Passage reranker; `0` if disabled or on rerank failure. |
+| `chat` | Sum of all main RAG `chat_complete` calls (including widen retries). |
+| `follow_up_chat` | Follow-up candidate generation chat; `0` if follow-ups disabled or failed before rerank. |
+| `follow_up_rerank` | Reranker over candidate question strings; `0` if skipped or no candidates. |
+
+The final `complete_rag_answer done` log line repeats these as top-level JSON fields (`duration_ms` / `latency_*_ms`) for Loki/Grafana.
 
 ## Pipeline
 
@@ -37,7 +54,7 @@ Validation errors (e.g. `follow_up_final > follow_up_candidates`) return **422**
 - `--follow-up-candidates N` — must satisfy `complete_rag_answer` validation (3–12).
 - `--follow-up-final M` — must be ≤ candidates.
 
-Printed JSON includes `follow_up_questions`.
+Printed JSON includes `follow_up_questions` and `latency_ms`.
 
 ## Fallbacks
 

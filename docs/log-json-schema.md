@@ -42,7 +42,8 @@ If the `LogRecord` has any of these attributes (via `logger.info(..., extra={...
 
 Defined allowlist in code (`_EXTRA_JSON_FIELDS`):
 
-- `duration_ms`
+- `duration_ms` (often total RAG wall time; mirrors `latency_total_ms` on `complete_rag_answer done` lines)
+- `latency_total_ms`, `latency_embed_ms`, `latency_retrieve_ms`, `latency_chunk_rerank_ms`, `latency_chat_ms`, `latency_follow_up_chat_ms`, `latency_follow_up_rerank_ms`
 - `backend`
 - `gpu`
 - `reason`
@@ -77,6 +78,12 @@ Per-line label **`logger`** is set to the Python logger name (e.g. `layer_rag.qu
 
 ```json
 {"ts": "2026-05-02T19:33:18.326075-04:00", "request_id": "req-abc123", "session_id": "ses-xyz789", "method": "POST", "path": "/v1/rag/query", "status": "200", "message": "query_chunks start collection=taixing_knowledge_dev k=50 dense_limit=50 cached_vec=True"}
+```
+
+**RAG request finished (optional latency fields on `complete_rag_answer done`):**
+
+```json
+{"ts": "2026-05-02T19:33:19.100000-04:00", "request_id": "req-abc123", "session_id": "ses-xyz789", "method": "POST", "path": "/v1/rag/query", "status": "200", "message": "complete_rag_answer done k_used=10 follow_up_questions=3 latency_total_ms=842", "duration_ms": 842, "latency_total_ms": 842, "latency_embed_ms": 120, "latency_retrieve_ms": 90, "latency_chunk_rerank_ms": 200, "latency_chat_ms": 350, "latency_follow_up_chat_ms": 60, "latency_follow_up_rerank_ms": 22}
 ```
 
 **With exception (includes `error`):**

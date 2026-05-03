@@ -75,6 +75,13 @@ _LOG_TZ = ZoneInfo("America/New_York")
 # Merged onto JSON when present on the LogRecord (from logger.*(..., extra={...})).
 _EXTRA_JSON_FIELDS = (
     "duration_ms",
+    "latency_total_ms",
+    "latency_embed_ms",
+    "latency_retrieve_ms",
+    "latency_chunk_rerank_ms",
+    "latency_chat_ms",
+    "latency_follow_up_chat_ms",
+    "latency_follow_up_rerank_ms",
     "backend",
     "gpu",
     "reason",

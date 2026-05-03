@@ -51,7 +51,7 @@ async def answer_from_inference_payload_async(
     """Run RAG + chat (async). Raise ``ValueError`` or ``httpx.HTTPStatusError`` on failure."""
     if body.k_max < body.k:
         raise ValueError("k_max must be >= k")
-    answer, citations, follow_up_questions = await complete_rag_answer(
+    answer, citations, follow_up_questions, latency_ms = await complete_rag_answer(
         body.question,
         body.collection_base,
         body.request_id,
@@ -71,6 +71,7 @@ async def answer_from_inference_payload_async(
         "answer": answer,
         "citations": citations,
         "follow_up_questions": follow_up_questions,
+        "latency_ms": latency_ms,
     }
 
 
@@ -132,7 +133,7 @@ def answer_from_inference(
     """Retrieve once (pool k_max), then chat; optional slice widen on NOT_FOUND. Set expand_on_not_found false for single-pass eval."""
     if follow_up_final > follow_up_candidates:
         raise ValueError("follow_up_final must be <= follow_up_candidates")
-    answer, citations, follow_up_questions = run_async(
+    answer, citations, follow_up_questions, latency_ms = run_async(
         complete_rag_answer(
             question,
             collection_base,
@@ -154,6 +155,7 @@ def answer_from_inference(
         "answer": answer,
         "citations": citations,
         "follow_up_questions": follow_up_questions,
+        "latency_ms": latency_ms,
     }
 
 
