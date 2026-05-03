@@ -40,7 +40,7 @@ Set `ENV` in `.env` to `dev`, `qa`, or `prod` (or export it). The second argumen
 
 ## Logging
 
-On `import app`, logs go to **stderr** as **JSON lines** (`ts`, `request_id`, `session_id`, `method`, `path`, `status`, `message`, …) with [America/New_York](https://docs.python.org/3/library/zoneinfo.html) timestamps; request context is set during `embed_text` / `query_chunks` / RAG / MCP tool calls (`method`/`path`/`status` stay `-` unless you use `bind_http_context` or `extra=` on the log call). Optional **Grafana Loki**: install the project (`tb-loki-central-logger` is a dependency) and set `GRAFANA_CLOUD_*` as in [.env.example](.env.example) (same pattern as [layer-gateway-embed logging](https://github.com/taixingbi/layer-gateway-embed-v1/blob/main/app/logging_config.py), using [tb-loki-central-logger](https://github.com/taixingbi/layer-loki-central-logger)).
+On `import app`, logs go to **stderr** as **JSON lines** (`ts`, `request_id`, `session_id`, `method`, `path`, `status`, `message`, …) with [America/New_York](https://docs.python.org/3/library/zoneinfo.html) timestamps; request context is set during `embed_text` / `query_chunks` / RAG / MCP tool calls (`method`/`path`/`status` stay `-` unless you use `bind_http_context` or `extra=` on the log call). Optional **Grafana Loki**: `tb-loki-central-logger` is a dependency; set `GRAFANA_CLOUD_URL`, `GRAFANA_CLOUD_USER`, and `GRAFANA_CLOUD_API_KEY` in the environment (or `.env`) to ship logs (same pattern as [layer-gateway-embed logging](https://github.com/taixingbi/layer-gateway-embed-v1/blob/main/app/logging_config.py)).
 
 ## curl smoke tests
 
