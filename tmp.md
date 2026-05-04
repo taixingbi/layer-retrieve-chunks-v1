@@ -77,9 +77,48 @@ curl -X POST http://localhost:8000/v1/rag/query \
 curl -X POST http://localhost:8000/v1/rag/query \
   -H "Content-Type: application/json" \
   -d '{
-    "question": "what is taixing visa status",
+    "question": "What does H4 EAD permit Taixing to do in the US?",
     "collection_base": "taixing_knowledge",
     "request_id": "request_id_1",
     "session_id": "session_id_1",
     "k": 5
-  }'
+  }'..
+
+
+
+
+  curl -sS -X POST http://192.168.86.179:30183/v1/rag/query \
+  -H "Content-Type: application/json" \
+  -d '{
+    "question": "What is taixing visa",
+    "collection_base": "taixing_knowledge",
+    "request_id": "req-abc123",
+    "session_id": "ses-xyz789",
+    "k": 5,
+    "k_max": 40
+  }' | jq .
+echo
+
+  curl -sS -X POST http://192.168.86.179:30183/v1/rag/query \
+  -H "Content-Type: application/json" \
+  -d '{
+    "question": "What does H4 EAD permit Taixing?",
+    "collection_base": "taixing_knowledge",
+    "request_id": "req-abc123",
+    "session_id": "ses-xyz789",
+    "k": 5,
+    "k_max": 40
+  }' | jq .
+echo
+
+  curl -sS -X POST http://192.168.86.179:30183/v1/rag/query \
+  -H "Content-Type: application/json" \
+  -d '{
+    "question": "Can Taixing work for any US company with an H4 EAD, or are there restrictions?",
+    "collection_base": "taixing_knowledge",
+    "request_id": "req-abc123",
+    "session_id": "ses-xyz789",
+    "k": 5,
+    "k_max": 40
+  }' | jq .
+echo

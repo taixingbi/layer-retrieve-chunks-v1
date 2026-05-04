@@ -14,6 +14,7 @@ else random UUIDs per run.
 from __future__ import annotations
 
 import argparse
+from typing import Any
 import json
 import os
 import re
@@ -312,6 +313,35 @@ def _with_citations(answer: str, citations: list[dict]) -> tuple[str, list[dict]
     return answer, _citations_used_in_answer(answer, citations)
 
 
+def _retrieval_hits_payload(
+    chunks_full: list[dict],
+    reranked: list[dict] | None,
+) -> list[dict]:
+    """
+    Slim rows for eval/debug: RRF-ordered retrieve stage, then optional rerank stage
+    (1-based ``rank`` within each ``stage``). No passage text.
+    """
+    hits: list[dict] = []
+    for i, c in enumerate(chunks_full, start=1):
+        hits.append({
+            "stage": "retrieve",
+            "rank": int(c.get("rank") or i),
+            "chunk_id": str(c.get("chunk_id") or ""),
+            "source": str(c.get("source") or ""),
+            "score": float(c.get("score", 0.0)),
+        })
+    if reranked:
+        for i, c in enumerate(reranked, start=1):
+            hits.append({
+                "stage": "rerank",
+                "rank": int(c.get("rerank_rank") or i),
+                "chunk_id": str(c.get("chunk_id") or ""),
+                "source": str(c.get("source") or ""),
+                "score": float(c.get("rerank_score", 0.0)),
+            })
+    return hits
+
+
 async def _rerank_chunks(
     *,
     question: str,
@@ -357,16 +387,19 @@ async def complete_rag_answer(
     include_follow_up_questions: bool = True,
     follow_up_candidates: int = 8,
     follow_up_final: int = 3,
-) -> tuple[str, list[dict], list[str], dict[str, int]]:
+    include_retrieval_hits: bool = False,
+) -> tuple[str, list[dict], list[str], dict[str, int], list[dict]]:
     """
     ``query_chunks`` → numbered context → ``POST .../v1/chat/completions``.
     Uses ``get_inference_url`` / ``get_inference_model`` / ``get_inference_max_tokens`` (from ``.env`` via ``app.config``).
 
-    Returns ``(answer, citations, follow_up_questions, latency_ms)`` where ``citations`` lists only passages the model
+    Returns ``(answer, citations, follow_up_questions, latency_ms, retrieval_hits)`` where ``citations`` lists only passages the model
     referenced with ``[n]`` in ``answer`` (each item: ``cite_id``, ``chunk_id``, ``source``, ``text``).
     ``follow_up_questions`` is empty when disabled or on failure; otherwise up to ``follow_up_final`` strings.
     ``latency_ms`` maps phase names to integer milliseconds (``total``, ``embed``, ``retrieve``, ``chunk_rerank``,
     ``chat``, ``follow_up_chat``, ``follow_up_rerank``); unused phases are ``0``.
+    ``retrieval_hits`` is empty unless ``include_retrieval_hits`` is true; then each item has
+    ``stage`` (``retrieve`` or ``rerank``), ``rank``, ``chunk_id``, ``source``, ``score`` (RRF vs rerank scale; not comparable across stages).
 
     One hybrid retrieval at ``k_max`` (query embedded once, Qdrant limit
     ``max(TOP_K_DENSE, k_max)``). NOT_FOUND / empty retries only **widen the local slice**
@@ -449,6 +482,7 @@ async def complete_rag_answer(
 
         candidate_chunks = chunks_full[: min(rerank_top_n, len(chunks_full))]
         chunk_rerank_ms = 0
+        reranked_for_hits: list[dict] | None = None
         if use_reranker:
             try:
                 t_rr = time.perf_counter()
@@ -462,6 +496,7 @@ async def complete_rag_answer(
                 chunk_rerank_ms = _elapsed_ms(t_rr)
                 if reranked:
                     candidate_chunks = reranked
+                    reranked_for_hits = reranked
                 logger.info(
                     "complete_rag_answer rerank applied candidates=%s selected=%s",
                     len(chunks_full),
@@ -568,7 +603,10 @@ async def complete_rag_answer(
                 "latency_follow_up_rerank_ms": follow_up_rerank_ms,
             },
         )
-        return answer_out, citations_out, follow_ups, latency_ms
+        retrieval_hits: list[dict] = []
+        if include_retrieval_hits:
+            retrieval_hits = _retrieval_hits_payload(chunks_full, reranked_for_hits)
+        return answer_out, citations_out, follow_ups, latency_ms, retrieval_hits
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -633,13 +671,18 @@ def main(argv: list[str] | None = None) -> int:
         default=3,
         help="Return this many follow-up questions after rerank (<= candidates).",
     )
+    p.add_argument(
+        "--retrieval-hits",
+        action="store_true",
+        help="Include retrieval_hits (RRF retrieve stage + optional rerank stage) in JSON for eval/debug.",
+    )
     args = p.parse_args(argv)
 
     rid = os.environ.get("RAG_REQUEST_ID") or str(uuid.uuid4())
     sid = os.environ.get("RAG_SESSION_ID") or str(uuid.uuid4())
 
     try:
-        answer, citations, follow_up_questions, latency_ms = run_async(
+        answer, citations, follow_up_questions, latency_ms, _retrieval_hits = run_async(
             complete_rag_answer(
                 args.question,
                 args.collection,
@@ -655,6 +698,7 @@ def main(argv: list[str] | None = None) -> int:
                 include_follow_up_questions=not args.no_follow_ups,
                 follow_up_candidates=args.follow_up_candidates,
                 follow_up_final=args.follow_up_final,
+                include_retrieval_hits=args.retrieval_hits,
             )
         )
     except ValueError as e:
@@ -663,12 +707,14 @@ def main(argv: list[str] | None = None) -> int:
     except httpx.HTTPStatusError as e:
         print(e.response.text, file=sys.stderr)
         return 2
-    out = {
+    out: dict[str, Any] = {
         "answer": answer,
         "citations": citations,
         "follow_up_questions": follow_up_questions,
         "latency_ms": latency_ms,
     }
+    if args.retrieval_hits:
+        out["retrieval_hits"] = _retrieval_hits
     print(json.dumps(out, ensure_ascii=False, indent=2))
     return 0
 

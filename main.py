@@ -37,12 +37,24 @@ class AnswerFromInferenceBody(BaseModel):
     include_follow_up_questions: bool = True
     follow_up_candidates: int = Field(default=8, ge=3, le=12)
     follow_up_final: int = Field(default=3, ge=1, le=8)
+    include_retrieval_hits: bool = False
+    debug: bool = False
+    trace_retrieval: bool = False
+    return_retrieval_hits: bool = False
 
     @model_validator(mode="after")
     def _follow_up_final_lte_candidates(self) -> AnswerFromInferenceBody:
         if self.follow_up_final > self.follow_up_candidates:
             raise ValueError("follow_up_final must be <= follow_up_candidates")
         return self
+
+    def wants_retrieval_hits(self) -> bool:
+        return bool(
+            self.include_retrieval_hits
+            or self.debug
+            or self.trace_retrieval
+            or self.return_retrieval_hits
+        )
 
 
 async def answer_from_inference_payload_async(
@@ -51,7 +63,8 @@ async def answer_from_inference_payload_async(
     """Run RAG + chat (async). Raise ``ValueError`` or ``httpx.HTTPStatusError`` on failure."""
     if body.k_max < body.k:
         raise ValueError("k_max must be >= k")
-    answer, citations, follow_up_questions, latency_ms = await complete_rag_answer(
+    wants_hits = body.wants_retrieval_hits()
+    answer, citations, follow_up_questions, latency_ms, retrieval_hits = await complete_rag_answer(
         body.question,
         body.collection_base,
         body.request_id,
@@ -66,13 +79,17 @@ async def answer_from_inference_payload_async(
         include_follow_up_questions=body.include_follow_up_questions,
         follow_up_candidates=body.follow_up_candidates,
         follow_up_final=body.follow_up_final,
+        include_retrieval_hits=wants_hits,
     )
-    return {
+    out: dict[str, Any] = {
         "answer": answer,
         "citations": citations,
         "follow_up_questions": follow_up_questions,
         "latency_ms": latency_ms,
     }
+    if wants_hits:
+        out["retrieval_hits"] = retrieval_hits
+    return out
 
 
 mcp = FastMCP(
@@ -129,11 +146,16 @@ def answer_from_inference(
     include_follow_up_questions: bool = True,
     follow_up_candidates: int = 8,
     follow_up_final: int = 3,
+    include_retrieval_hits: bool = False,
+    debug: bool = False,
+    trace_retrieval: bool = False,
+    return_retrieval_hits: bool = False,
 ) -> dict[str, Any]:
     """Retrieve once (pool k_max), then chat; optional slice widen on NOT_FOUND. Set expand_on_not_found false for single-pass eval."""
     if follow_up_final > follow_up_candidates:
         raise ValueError("follow_up_final must be <= follow_up_candidates")
-    answer, citations, follow_up_questions, latency_ms = run_async(
+    wants_hits = include_retrieval_hits or debug or trace_retrieval or return_retrieval_hits
+    answer, citations, follow_up_questions, latency_ms, retrieval_hits = run_async(
         complete_rag_answer(
             question,
             collection_base,
@@ -149,14 +171,18 @@ def answer_from_inference(
             include_follow_up_questions=include_follow_up_questions,
             follow_up_candidates=follow_up_candidates,
             follow_up_final=follow_up_final,
+            include_retrieval_hits=wants_hits,
         )
     )
-    return {
+    out: dict[str, Any] = {
         "answer": answer,
         "citations": citations,
         "follow_up_questions": follow_up_questions,
         "latency_ms": latency_ms,
     }
+    if wants_hits:
+        out["retrieval_hits"] = retrieval_hits
+    return out
 
 
 @mcp.custom_route("/v1/rag/query", methods=["POST"])
