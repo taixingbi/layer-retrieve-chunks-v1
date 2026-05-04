@@ -124,7 +124,7 @@ source .venv/bin/activate
 fastmcp run main.py:mcp --transport http --port 8000
 ```
 
-On **HTTP** transport, **MCP** clients use `http://127.0.0.1:8000/mcp` . The same process also serves **`POST http://127.0.0.1:8000/v1/rag/query`** (JSON body; response includes `answer`, `citations`, `follow_up_questions`, and `latency_ms` — per-phase millisecond timings) for plain `curl` scripts.
+On **HTTP** transport, **MCP** clients use `http://127.0.0.1:8000/mcp` . The same process also serves **`POST http://127.0.0.1:8000/v1/rag/query`** (JSON body; default response includes `answer`, `citations`, `follow_up_questions`, and `latency_ms` — per-phase millisecond timings) for plain `curl` scripts.
 
 ```bash
 curl -sS -X POST http://127.0.0.1:8000/v1/rag/query \
@@ -139,7 +139,27 @@ curl -sS -X POST http://127.0.0.1:8000/v1/rag/query \
   }'
 ```
 
-Response: `answer` is model text (with inline `[n]` citations); `citations` lists only passages actually cited in `answer` (`cite_id`, `chunk_id`, `source`, `text`). `follow_up_questions` is always present (possibly `[]`): strings produced by a short second chat call then trimmed by the reranker. `latency_ms` is always present (`total`, `embed`, `retrieve`, `chunk_rerank`, `chat`, `follow_up_chat`, `follow_up_rerank`). Optional body fields: `"max_tokens": 512`, rerank controls `"rerank_top_n": 50`, `"final_context_top_k": 10`, `"use_reranker": true`, and follow-up controls `"include_follow_up_questions": true` (default), `"follow_up_candidates": 8` (3–12), `"follow_up_final": 3` (must be `<= follow_up_candidates`).
+**Response (default):** `answer` is model text (with inline `[n]` citations); `citations` lists only passages actually cited in `answer` (`cite_id`, `chunk_id`, `source`, `text`). `follow_up_questions` is always present (possibly `[]`): strings from a second chat call, trimmed by the reranker. `latency_ms` is always present (`total`, `embed`, `retrieve`, `chunk_rerank`, `chat`, `follow_up_chat`, `follow_up_rerank`).
+
+**Optional body fields:** `"max_tokens": 512`, rerank controls `"rerank_top_n": 40`, `"rerank_return_top_k": 18` (must be `>= final_context_top_k` when reranking), `"retrieve_fallback_n": 3`, `"final_context_top_k": 9`, `"use_reranker": true`, `"expand_on_not_found": true`, and follow-up controls `"include_follow_up_questions": true` (default), `"follow_up_candidates": 8` (3–12), `"follow_up_final": 3` (must be `<= follow_up_candidates`). Defaults also come from `.env` (`RERANK_TOP_N`, `RERANK_RETURN_TOP_K`, `RETRIEVE_FALLBACK_N`, `FINAL_CONTEXT_TOP_K`).
+
+**Optional `retrieval_hits` (eval / debug):** If any of these booleans is true, the response also includes `retrieval_hits`: `include_retrieval_hits`, `debug`, `trace_retrieval`, `return_retrieval_hits`. Each hit is a small object (no passage text): `stage` (`retrieve` = RRF order after hybrid fusion, `rerank` = cross-encoder order when reranking ran), `rank` (1-based within that stage), `chunk_id`, `source`, `score`. Scores are not comparable across stages (retrieve uses RRF; rerank uses the rerank API).
+
+```bash
+curl -sS -X POST http://127.0.0.1:8000/v1/rag/query \
+  -H "Content-Type: application/json" \
+  -d '{
+    "question": "what is taixing visa",
+    "collection_base": "taixing_knowledge",
+    "request_id": "req-abc123",
+    "session_id": "ses-xyz789",
+    "k": 5,
+    "k_max": 40,
+    "include_retrieval_hits": true
+  }'
+```
+
+See also [`docs/follow-up-questions.md`](docs/follow-up-questions.md) and [`docs/log-json-schema.md`](docs/log-json-schema.md).
 
 **Cursor** (`.cursor/mcp.json` or global MCP settings): point the server at the repo root so `.env` resolves; use your venv’s `python` if needed:
 
@@ -165,20 +185,16 @@ End-to-end: **hybrid retrieval** (`query_chunks` in `app/retrieval.py`; Qdrant c
 python -m app.rag_answer "where is jersey city" -c taixing_knowledge -k 5
 ```
 
+Useful flags: `--single-pass` (one chat, no context widen on `NOT_FOUND`), `--no-reranker`, `--no-follow-ups`, `--retrieval-hits` (print `retrieval_hits` in the JSON, same shape as HTTP when the debug flags are on), `--follow-up-candidates` / `--follow-up-final`.
+
 Same flow as: retrieve grounded passages, join them as context, then call your stack’s chat endpoint with `messages` (see `app/rag_answer.py`). Inspect the OpenAPI UI at `http://<host>:30080/docs` for extra fields (temperature, etc.) if you extend the script.
 
-## test
-curl -X POST http://localhost:8000/v1/rag/query \
-  -H "Content-Type: application/json" \
-  -d '{
-    "question": "what is taixing visa status",
-    "collection_base": "taixing_knowledge",
-    "request_id": "request_id_1",
-    "session_id": "session_id_1",
-    "k": 5
-  }'
+The MCP tool `answer_from_inference` accepts the same optional booleans as the HTTP body for retrieval hits (`include_retrieval_hits`, `debug`, `trace_retrieval`, `return_retrieval_hits`).
 
-## eva
+## Evaluation
+
+```bash
 python eva/test.py -i eva/dataset/dataset-gold-test-1.0.0.json -o eva/result/dataset-gold-test-1.0.0.json
 
 python eva/metric.py -i eva/result/dataset-gold-test-1.0.0.json -o eva/result/dataset-gold-test-eva-1.0.0.json
+```

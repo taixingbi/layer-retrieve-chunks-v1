@@ -32,6 +32,8 @@ class AnswerFromInferenceBody(BaseModel):
     max_tokens: int | None = None
     expand_on_not_found: bool = True
     rerank_top_n: int | None = Field(default=None, ge=1)
+    rerank_return_top_k: int | None = Field(default=None, ge=1)
+    retrieve_fallback_n: int | None = Field(default=None, ge=0)
     final_context_top_k: int | None = Field(default=None, ge=1)
     use_reranker: bool = True
     include_follow_up_questions: bool = True
@@ -74,6 +76,8 @@ async def answer_from_inference_payload_async(
         max_tokens=body.max_tokens,
         expand_on_not_found=body.expand_on_not_found,
         rerank_top_n=body.rerank_top_n,
+        rerank_return_top_k=body.rerank_return_top_k,
+        retrieve_fallback_n=body.retrieve_fallback_n,
         final_context_top_k=body.final_context_top_k,
         use_reranker=body.use_reranker,
         include_follow_up_questions=body.include_follow_up_questions,
@@ -141,6 +145,8 @@ def answer_from_inference(
     max_tokens: int | None = None,
     expand_on_not_found: bool = True,
     rerank_top_n: int | None = None,
+    rerank_return_top_k: int | None = None,
+    retrieve_fallback_n: int | None = None,
     final_context_top_k: int | None = None,
     use_reranker: bool = True,
     include_follow_up_questions: bool = True,
@@ -166,6 +172,8 @@ def answer_from_inference(
             max_tokens=max_tokens,
             expand_on_not_found=expand_on_not_found,
             rerank_top_n=rerank_top_n,
+            rerank_return_top_k=rerank_return_top_k,
+            retrieve_fallback_n=retrieve_fallback_n,
             final_context_top_k=final_context_top_k,
             use_reranker=use_reranker,
             include_follow_up_questions=include_follow_up_questions,

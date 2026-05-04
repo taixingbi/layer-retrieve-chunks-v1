@@ -30,8 +30,10 @@ from app.config import (
     get_inference_model,
     get_inference_url,
     get_rerank_model,
+    get_rerank_return_top_k,
     get_rerank_top_n,
     get_rerank_url,
+    get_retrieve_fallback_n,
 )
 from app.asyncio_util import run_async
 from app.http.embed import embed_text
@@ -342,13 +344,41 @@ def _retrieval_hits_payload(
     return hits
 
 
+def _merge_rerank_with_retrieve_fallback(
+    reranked: list[dict],
+    chunks_full: list[dict],
+    *,
+    fallback_n: int,
+) -> list[dict]:
+    """
+    Rerank-ordered list first, then up to ``fallback_n`` chunks from RRF ``chunks_full`` order
+    whose ``chunk_id`` was missing from the rerank output (reranker miss hedge).
+    """
+    if fallback_n <= 0 or not reranked:
+        return [dict(c) for c in reranked]
+    seen = {str(c.get("chunk_id") or "") for c in reranked}
+    seen.discard("")
+    out: list[dict] = [dict(c) for c in reranked]
+    added = 0
+    for c in chunks_full:
+        if added >= fallback_n:
+            break
+        cid = str(c.get("chunk_id") or "")
+        if not cid or cid in seen:
+            continue
+        out.append(dict(c))
+        seen.add(cid)
+        added += 1
+    return out
+
+
 async def _rerank_chunks(
     *,
     question: str,
     chunks: list[dict],
     rerank_url: str,
     rerank_model: str,
-    final_top_k: int,
+    rerank_return_top_k: int,
 ) -> list[dict]:
     if not chunks:
         return []
@@ -357,7 +387,7 @@ async def _rerank_chunks(
         model=rerank_model,
         query=question,
         documents=[(c.get("text") or "") for c in chunks],
-        top_n=min(final_top_k, len(chunks)),
+        top_n=min(rerank_return_top_k, len(chunks)),
     )
     out: list[dict] = []
     for rank, row in enumerate(rows, start=1):
@@ -382,6 +412,8 @@ async def complete_rag_answer(
     max_tokens: int | None = None,
     expand_on_not_found: bool = True,
     rerank_top_n: int | None = None,
+    rerank_return_top_k: int | None = None,
+    retrieve_fallback_n: int | None = None,
     final_context_top_k: int | None = None,
     use_reranker: bool = True,
     include_follow_up_questions: bool = True,
@@ -403,7 +435,11 @@ async def complete_rag_answer(
 
     One hybrid retrieval at ``k_max`` (query embedded once, Qdrant limit
     ``max(TOP_K_DENSE, k_max)``). NOT_FOUND / empty retries only **widen the local slice**
-    ``chunks_full[:k]`` (no second embed, no second Qdrant round).
+    within the merged candidate pool (no second embed, no second Qdrant round).
+
+    Rerank keeps ``rerank_return_top_k`` rows from ``/v1/rerank``; then up to ``retrieve_fallback_n``
+    raw-retrieval chunks are appended if absent from that list. The chat context uses at most
+    ``final_context_top_k`` passages per turn while widening.
 
     Set ``expand_on_not_found=False`` for a single chat call at the initial ``k`` (typical for eval).
     """
@@ -411,6 +447,10 @@ async def complete_rag_answer(
         max_tokens = get_inference_max_tokens()
     if rerank_top_n is None:
         rerank_top_n = get_rerank_top_n()
+    if rerank_return_top_k is None:
+        rerank_return_top_k = get_rerank_return_top_k()
+    if retrieve_fallback_n is None:
+        retrieve_fallback_n = get_retrieve_fallback_n()
     if final_context_top_k is None:
         final_context_top_k = get_final_context_top_k()
     infer_base = get_inference_url()
@@ -424,8 +464,17 @@ async def complete_rag_answer(
         raise ValueError("k_max must be >= k.")
     if rerank_top_n < 1:
         raise ValueError("rerank_top_n must be >= 1.")
+    if rerank_return_top_k < 1:
+        raise ValueError("rerank_return_top_k must be >= 1.")
+    if retrieve_fallback_n < 0:
+        raise ValueError("retrieve_fallback_n must be >= 0.")
     if final_context_top_k < 1:
         raise ValueError("final_context_top_k must be >= 1.")
+    if use_reranker and rerank_return_top_k < final_context_top_k:
+        raise ValueError(
+            "rerank_return_top_k must be >= final_context_top_k when use_reranker is true "
+            "so the widen pool can reach the configured max context size."
+        )
     if follow_up_final < 1:
         raise ValueError("follow_up_final must be at least 1.")
     if follow_up_candidates < 3 or follow_up_candidates > 12:
@@ -448,12 +497,15 @@ async def complete_rag_answer(
     with bind_request_context(request_id, session_id):
         wall_t0 = time.perf_counter()
         logger.info(
-            "complete_rag_answer start collection_base=%s k=%s k_max=%s rerank_top_n=%s final_top_k=%s "
+            "complete_rag_answer start collection_base=%s k=%s k_max=%s rerank_top_n=%s "
+            "rerank_return_top_k=%s retrieve_fallback_n=%s final_context_top_k=%s "
             "use_reranker=%s follow_ups=%s cand=%s final=%s",
             collection_base,
             k,
             k_max,
             rerank_top_n,
+            rerank_return_top_k,
+            retrieve_fallback_n,
             final_context_top_k,
             use_reranker,
             include_follow_up_questions,
@@ -491,14 +543,18 @@ async def complete_rag_answer(
                     chunks=candidate_chunks,
                     rerank_url=rerank_base,
                     rerank_model=rerank_model,
-                    final_top_k=final_context_top_k,
+                    rerank_return_top_k=rerank_return_top_k,
                 )
                 chunk_rerank_ms = _elapsed_ms(t_rr)
                 if reranked:
-                    candidate_chunks = reranked
+                    candidate_chunks = _merge_rerank_with_retrieve_fallback(
+                        reranked,
+                        chunks_full,
+                        fallback_n=retrieve_fallback_n,
+                    )
                     reranked_for_hits = reranked
                 logger.info(
-                    "complete_rag_answer rerank applied candidates=%s selected=%s",
+                    "complete_rag_answer rerank applied candidates=%s merged_pool=%s",
                     len(chunks_full),
                     len(candidate_chunks),
                 )
@@ -507,9 +563,8 @@ async def complete_rag_answer(
                     "complete_rag_answer rerank fallback reason=%s",
                     str(e),
                 )
-        candidate_chunks = candidate_chunks[:final_context_top_k]
 
-        current_k = min(k, len(candidate_chunks))
+        current_k = min(k, len(candidate_chunks), final_context_top_k)
         last_answer = ""
         last_citations: list[dict] = []
         chunks_for_followups: list[dict] = []
@@ -641,13 +696,25 @@ def main(argv: list[str] | None = None) -> int:
         "--rerank-top-n",
         type=int,
         default=get_rerank_top_n(),
-        help="RRF candidate pool sent to reranker.",
+        help="RRF candidate pool size sent to reranker (document count).",
+    )
+    p.add_argument(
+        "--rerank-return-top-k",
+        type=int,
+        default=get_rerank_return_top_k(),
+        help="Rerank API top_n: ranked rows to keep before retrieve fallback (>= final-top-k).",
+    )
+    p.add_argument(
+        "--retrieve-fallback-n",
+        type=int,
+        default=get_retrieve_fallback_n(),
+        help="After rerank, append up to N RRF-ordered chunks missing from rerank output.",
     )
     p.add_argument(
         "--final-top-k",
         type=int,
         default=get_final_context_top_k(),
-        help="Final passage count after reranking.",
+        help="Max passages in one chat context (NOT_FOUND widen cap).",
     )
     p.add_argument(
         "--no-reranker",
@@ -693,6 +760,8 @@ def main(argv: list[str] | None = None) -> int:
                 max_tokens=args.max_tokens,
                 expand_on_not_found=not args.single_pass,
                 rerank_top_n=args.rerank_top_n,
+                rerank_return_top_k=args.rerank_return_top_k,
+                retrieve_fallback_n=args.retrieve_fallback_n,
                 final_context_top_k=args.final_top_k,
                 use_reranker=not args.no_reranker,
                 include_follow_up_questions=not args.no_follow_ups,

@@ -6,7 +6,8 @@ be empty where allowed). Pass ``request_id`` and ``session_id`` into ``embed_tex
 for embedding ``X-Request-Id`` and ``X-Session-Id``.
 
 Optional: ``INFERENCE_URL``, ``INFERENCE_MODEL``, ``INFERENCE_MAX_TOKENS``,
-``RERANK_URL``, ``RERANK_MODEL``, ``RERANK_TOP_N``, ``FINAL_CONTEXT_TOP_K`` (see getters).
+``RERANK_URL``, ``RERANK_MODEL``, ``RERANK_TOP_N``, ``RERANK_RETURN_TOP_K``,
+``RETRIEVE_FALLBACK_N``, ``FINAL_CONTEXT_TOP_K`` (see getters).
 """
 from pathlib import Path
 
@@ -97,8 +98,10 @@ _DEFAULT_INFERENCE_MODEL = "Qwen/Qwen2.5-7B-Instruct"
 _DEFAULT_INFERENCE_MAX_TOKENS = 512
 _DEFAULT_RERANK_URL = "http://localhost:30080"
 _DEFAULT_RERANK_MODEL = "BAAI/bge-reranker-v2-m3"
-_DEFAULT_RERANK_TOP_N = 50
-_DEFAULT_FINAL_CONTEXT_TOP_K = 10
+_DEFAULT_RERANK_TOP_N = 40
+_DEFAULT_RERANK_RETURN_TOP_K = 18
+_DEFAULT_RETRIEVE_FALLBACK_N = 3
+_DEFAULT_FINAL_CONTEXT_TOP_K = 9
 
 
 def get_inference_url() -> str:
@@ -127,10 +130,20 @@ def get_rerank_model() -> str:
 
 
 def get_rerank_top_n() -> int:
-    """Candidates to rerank before final context selection. Optional in ``.env``."""
+    """Fused-retrieval candidates sent into the reranker (document count). Optional in ``.env``."""
     return int(os.environ.get("RERANK_TOP_N", str(_DEFAULT_RERANK_TOP_N)))
 
 
+def get_rerank_return_top_k() -> int:
+    """``top_n`` for ``/v1/rerank``: how many ranked passages to keep (ordering / recall before prompt cap)."""
+    return int(os.environ.get("RERANK_RETURN_TOP_K", str(_DEFAULT_RERANK_RETURN_TOP_K)))
+
+
+def get_retrieve_fallback_n() -> int:
+    """After rerank, append up to this many extra chunks from raw RRF order (ids not already in rerank list)."""
+    return int(os.environ.get("RETRIEVE_FALLBACK_N", str(_DEFAULT_RETRIEVE_FALLBACK_N)))
+
+
 def get_final_context_top_k() -> int:
-    """Final passages sent to chat after rerank. Optional in ``.env``."""
+    """Max passages in one chat context (initial ``k`` widen cap). Optional in ``.env``."""
     return int(os.environ.get("FINAL_CONTEXT_TOP_K", str(_DEFAULT_FINAL_CONTEXT_TOP_K)))
