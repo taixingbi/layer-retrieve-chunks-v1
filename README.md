@@ -135,13 +135,13 @@ curl -sS -X POST http://127.0.0.1:8000/v1/rag/query \
     "request_id": "req-abc123",
     "session_id": "ses-xyz789",
     "k": 5,
-    "k_max": 40
+    "k_max": 50
   }'
 ```
 
 **Response (default):** `answer` is model text (with inline `[n]` citations); `citations` lists only passages actually cited in `answer` (`cite_id`, `chunk_id`, `source`, `text`). `follow_up_questions` is always present (possibly `[]`): strings from a second chat call, trimmed by the reranker. `latency_ms` is always present (`total`, `embed`, `retrieve`, `chunk_rerank`, `chat`, `follow_up_chat`, `follow_up_rerank`).
 
-**Optional body fields:** `"max_tokens": 512`, rerank controls `"rerank_top_n": 40`, `"rerank_return_top_k": 18` (must be `>= final_context_top_k` when reranking), `"retrieve_fallback_n": 3`, `"final_context_top_k": 9`, `"use_reranker": true`, `"expand_on_not_found": true`, and follow-up controls `"include_follow_up_questions": true` (default), `"follow_up_candidates": 8` (3–12), `"follow_up_final": 3` (must be `<= follow_up_candidates`). Defaults also come from `.env` (`RERANK_TOP_N`, `RERANK_RETURN_TOP_K`, `RETRIEVE_FALLBACK_N`, `FINAL_CONTEXT_TOP_K`).
+**Optional body fields:** `"max_tokens": 512`, rerank controls `"rerank_top_n": 50`, `"rerank_return_top_k": 25` (must be `>= final_context_top_k` when reranking), `"retrieve_fallback_n": 3`, `"final_context_top_k": 12`, `"use_reranker": true`, `"expand_on_not_found": true`, and follow-up controls `"include_follow_up_questions": true` (default), `"follow_up_candidates": 8` (3–12), `"follow_up_final": 3` (must be `<= follow_up_candidates`). Defaults also come from `.env` (`RERANK_TOP_N`, `RERANK_RETURN_TOP_K`, `RETRIEVE_FALLBACK_N`, `FINAL_CONTEXT_TOP_K`).
 
 **Optional `retrieval_hits` (eval / debug):** If any of these booleans is true, the response also includes `retrieval_hits`: `include_retrieval_hits`, `debug`, `trace_retrieval`, `return_retrieval_hits`. Each hit is a small object (no passage text): `stage` (`retrieve` = RRF order after hybrid fusion, `rerank` = cross-encoder order when reranking ran), `rank` (1-based within that stage), `chunk_id`, `source`, `score`. Scores are not comparable across stages (retrieve uses RRF; rerank uses the rerank API).
 
@@ -154,7 +154,7 @@ curl -sS -X POST http://127.0.0.1:8000/v1/rag/query \
     "request_id": "req-abc123",
     "session_id": "ses-xyz789",
     "k": 5,
-    "k_max": 40,
+    "k_max": 50,
     "include_retrieval_hits": true
   }'
 ```

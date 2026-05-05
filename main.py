@@ -28,7 +28,7 @@ class AnswerFromInferenceBody(BaseModel):
     request_id: str = Field(..., min_length=1)
     session_id: str = Field(..., min_length=1)
     k: int = Field(default=5, ge=1)
-    k_max: int = Field(default=40, ge=1)
+    k_max: int = Field(default=50, ge=1)
     max_tokens: int | None = None
     expand_on_not_found: bool = True
     rerank_top_n: int | None = Field(default=None, ge=1)
@@ -141,7 +141,7 @@ def answer_from_inference(
     request_id: str,
     session_id: str,
     k: int = 5,
-    k_max: int = 40,
+    k_max: int = 50,
     max_tokens: int | None = None,
     expand_on_not_found: bool = True,
     rerank_top_n: int | None = None,

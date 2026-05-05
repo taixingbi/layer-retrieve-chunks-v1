@@ -408,7 +408,7 @@ async def complete_rag_answer(
     session_id: str,
     *,
     k: int = 5,
-    k_max: int = 40,
+    k_max: int = 50,
     max_tokens: int | None = None,
     expand_on_not_found: bool = True,
     rerank_top_n: int | None = None,
@@ -679,7 +679,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument(
         "--k-max",
         type=int,
-        default=40,
+        default=50,
         help="Retrieval pool size (RRF top-k); also cap when widening context slice on NOT_FOUND",
     )
     p.add_argument(
