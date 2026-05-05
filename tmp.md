@@ -133,8 +133,7 @@ curl -sS -X POST http://192.168.86.179:30183/v1/rag/query \
     "request_id": "req-abc123",
     "session_id": "ses-xyz789",
     "k": 5,
-    "k_max": 40,
-    "include_retrieval_hits": true
+    "k_max": 40
   }'
 
 curl -sS -X POST http://192.168.86.179:30183/v1/rag/query \
