@@ -23,6 +23,7 @@ All keys below are **always present** on normal log lines.
 | Field | Type | Meaning |
 |-------|------|---------|
 | `ts` | string | ISO-8601 timestamp in **`America/New_York`** (from `record.created`). |
+| `level` | string | Python log level name (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`). |
 | `request_id` | string | From request context, or `"-"` if unset. |
 | `session_id` | string | From request context when `request_id` is set; otherwise `"-"` (avoids orphan session ids). |
 | `method` | string | HTTP method from context, or `"-"`. |
@@ -71,25 +72,26 @@ Per-line label **`logger`** is set to the Python logger name (e.g. `layer_rag.qu
 
 - **Loki**: See README / Grafana docs for `GRAFANA_CLOUD_*` variables used by `basic_auth_from_env()`.
 - **Proxy**: If Loki push fails through an HTTP proxy with errors such as 403, set `LOKI_IGNORE_SYSTEM_PROXY=1` (truthy) to use a client that bypasses system proxy settings.
+- **LogQL by level**: now that `level` is in each JSON line, queries like `{service="layer-rag-query",component="query"} | json | __error__="" | level="ERROR"` work.
 
 ## Example lines
 
 **Info during retrieval (no exception, no `error` key):**
 
 ```json
-{"ts": "2026-05-02T19:33:18.326075-04:00", "request_id": "req-abc123", "session_id": "ses-xyz789", "method": "POST", "path": "/v1/rag/query", "status": "200", "message": "query_chunks start collection=taixing_knowledge_dev k=50 dense_limit=50 cached_vec=True"}
+{"ts": "2026-05-02T19:33:18.326075-04:00", "level": "INFO", "request_id": "req-abc123", "session_id": "ses-xyz789", "method": "POST", "path": "/v1/rag/query", "status": "200", "message": "query_chunks start collection=taixing_knowledge_dev k=50 dense_limit=50 cached_vec=True"}
 ```
 
 **RAG request finished (optional latency fields on `complete_rag_answer done`):**
 
 ```json
-{"ts": "2026-05-02T19:33:19.100000-04:00", "request_id": "req-abc123", "session_id": "ses-xyz789", "method": "POST", "path": "/v1/rag/query", "status": "200", "message": "complete_rag_answer done k_used=10 follow_up_questions=3 latency_total_ms=842", "duration_ms": 842, "latency_total_ms": 842, "latency_embed_ms": 120, "latency_retrieve_ms": 90, "latency_chunk_rerank_ms": 200, "latency_chat_ms": 350, "latency_follow_up_chat_ms": 60, "latency_follow_up_rerank_ms": 22}
+{"ts": "2026-05-02T19:33:19.100000-04:00", "level": "INFO", "request_id": "req-abc123", "session_id": "ses-xyz789", "method": "POST", "path": "/v1/rag/query", "status": "200", "message": "complete_rag_answer done k_used=10 follow_up_questions=3 latency_total_ms=842", "duration_ms": 842, "latency_total_ms": 842, "latency_embed_ms": 120, "latency_retrieve_ms": 90, "latency_chunk_rerank_ms": 200, "latency_chat_ms": 350, "latency_follow_up_chat_ms": 60, "latency_follow_up_rerank_ms": 22}
 ```
 
 **With exception (includes `error`):**
 
 ```json
-{"ts": "2026-05-02T12:00:00.000000-05:00", "request_id": "-", "session_id": "-", "method": "-", "path": "-", "status": "-", "message": "upstream failed", "error": "Traceback (most recent call last):\n  ..."}
+{"ts": "2026-05-02T12:00:00.000000-05:00", "level": "ERROR", "request_id": "-", "session_id": "-", "method": "-", "path": "-", "status": "-", "message": "upstream failed", "error": "Traceback (most recent call last):\n  ..."}
 ```
 
 ## Related code

@@ -172,6 +172,7 @@ class _JsonFormatter(logging.Formatter):
         """Serialize ``record`` to a single JSON line; include ``error`` only when ``exc_info`` is set."""
         payload: dict[str, object] = {
             "ts": datetime.fromtimestamp(record.created, tz=_LOG_TZ).isoformat(),
+            "level": record.levelname,
             "request_id": getattr(record, "request_id", "-"),
             "session_id": getattr(record, "session_id", "-"),
             "method": getattr(record, "method", "-"),
