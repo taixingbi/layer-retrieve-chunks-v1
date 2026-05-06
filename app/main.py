@@ -51,12 +51,34 @@ class AnswerFromInferenceBody(BaseModel):
         return self
 
     def wants_retrieval_hits(self) -> bool:
+        """Support historical debug aliases for returning retrieval_hits."""
         return bool(
             self.include_retrieval_hits
             or self.debug
             or self.trace_retrieval
             or self.return_retrieval_hits
         )
+
+
+def _answer_payload(
+    *,
+    answer: str,
+    citations: list[dict],
+    follow_up_questions: list[str],
+    latency_ms: dict[str, int],
+    retrieval_hits: list[dict],
+    include_retrieval_hits: bool,
+) -> dict[str, Any]:
+    """Build stable HTTP/MCP response payload (conditionally including retrieval_hits)."""
+    out: dict[str, Any] = {
+        "answer": answer,
+        "citations": citations,
+        "follow_up_questions": follow_up_questions,
+        "latency_ms": latency_ms,
+    }
+    if include_retrieval_hits:
+        out["retrieval_hits"] = retrieval_hits
+    return out
 
 
 async def answer_from_inference_payload_async(
@@ -85,15 +107,14 @@ async def answer_from_inference_payload_async(
         follow_up_final=body.follow_up_final,
         include_retrieval_hits=wants_hits,
     )
-    out: dict[str, Any] = {
-        "answer": answer,
-        "citations": citations,
-        "follow_up_questions": follow_up_questions,
-        "latency_ms": latency_ms,
-    }
-    if wants_hits:
-        out["retrieval_hits"] = retrieval_hits
-    return out
+    return _answer_payload(
+        answer=answer,
+        citations=citations,
+        follow_up_questions=follow_up_questions,
+        latency_ms=latency_ms,
+        retrieval_hits=retrieval_hits,
+        include_retrieval_hits=wants_hits,
+    )
 
 
 mcp = FastMCP(
@@ -182,15 +203,14 @@ def answer_from_inference(
             include_retrieval_hits=wants_hits,
         )
     )
-    out: dict[str, Any] = {
-        "answer": answer,
-        "citations": citations,
-        "follow_up_questions": follow_up_questions,
-        "latency_ms": latency_ms,
-    }
-    if wants_hits:
-        out["retrieval_hits"] = retrieval_hits
-    return out
+    return _answer_payload(
+        answer=answer,
+        citations=citations,
+        follow_up_questions=follow_up_questions,
+        latency_ms=latency_ms,
+        retrieval_hits=retrieval_hits,
+        include_retrieval_hits=wants_hits,
+    )
 
 
 @mcp.custom_route("/v1/rag/query", methods=["POST"])

@@ -44,7 +44,8 @@ Token budget for the generator: `min(512, max(256, max_tokens))` where `max_toke
 |-------|---------|-------------|
 | `include_follow_up_questions` | `true` | Set `false` to skip extra chat + rerank. |
 | `follow_up_candidates` | `8` | Integer in **3–12** (LLM asked for between `max(3, N-3)` and `N` questions). |
-| `follow_up_final` | `3` | Integer **1–8** and **must be ≤ `follow_up_candidates`**. |
+| `follow_up_final` | `3` | Integer **1–8** and **must be <= `follow_up_candidates`**. |
+| `include_retrieval_hits` | `false` | Include `retrieval_hits` in the response. Equivalent aliases: `debug`, `trace_retrieval`, `return_retrieval_hits`. |
 
 Validation errors (e.g. `follow_up_final > follow_up_candidates`) return **422** on HTTP with Pydantic detail.
 

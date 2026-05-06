@@ -173,7 +173,7 @@ async def _rerank_follow_up_strings(
             model=rerank_model,
             query=question,
             documents=candidates,
-            top_n=len(candidates),
+            top_n=n,
         )
     except Exception as e:
         logger.warning("follow_up rerank failed reason=%s", str(e))
@@ -553,9 +553,15 @@ async def complete_rag_answer(
                         fallback_n=retrieve_fallback_n,
                     )
                     reranked_for_hits = reranked
+                    fallback_added = max(0, len(candidate_chunks) - len(reranked))
+                else:
+                    fallback_added = 0
                 logger.info(
-                    "complete_rag_answer rerank applied candidates=%s merged_pool=%s",
+                    "complete_rag_answer rerank applied candidates=%s rerank_kept=%s "
+                    "fallback_added=%s merged_pool=%s",
                     len(chunks_full),
+                    len(reranked),
+                    fallback_added,
                     len(candidate_chunks),
                 )
             except Exception as e:
