@@ -21,4 +21,4 @@ USER appuser
 EXPOSE 8000
 
 # FastMCP expects file-path target format in this environment.
-CMD ["fastmcp", "run", "-m", "app.main:mcp", "--transport", "http", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["fastmcp", "run", "app/main.py:mcp", "--transport", "http", "--host", "0.0.0.0", "--port", "8000"]
