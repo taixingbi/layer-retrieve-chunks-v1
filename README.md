@@ -121,7 +121,7 @@ Optional [FastMCP](https://gofastmcp.com) server over **stdio** (e.g. Cursor): t
 ```bash
 uv pip install -e ".[mcp]"
 source .venv/bin/activate
-fastmcp run -m app.main
+fastmcp run app/main.py:mcp --transport http --host 0.0.0.0 --port 8000
 ```
 
 `-m app.main` is the module-style entrypoint. In this mode, FastMCP uses the module's own startup (`mcp.run()`), so CLI transport/host/port flags are ignored.
@@ -176,7 +176,7 @@ See also [`docs/follow-up-questions.md`](docs/follow-up-questions.md) and [`docs
 }
 ```
 
-CLI: `fastmcp run -m app.main`
+CLI: `fastmcp run app/main.py:mcp --transport http --host 0.0.0.0 --port 8000`
 
 ## RAG + inference (chat API)
 

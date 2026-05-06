@@ -3,7 +3,7 @@ FastMCP server: hybrid chunk retrieval + embeddings (stdio for Cursor / Claude).
 
 Requires `.env` at repo root (same as `import app`). Install: ``pip install -e ".[mcp]"``
 
-Run: ``python -m app.main`` or ``fastmcp run -m app.main:mcp``
+Run: ``python -m app.main`` or ``fastmcp run app/main.py:mcp``
 """
 from __future__ import annotations
 
