@@ -121,7 +121,7 @@ Optional [FastMCP](https://gofastmcp.com) server over **stdio** (e.g. Cursor): t
 ```bash
 uv pip install -e ".[mcp]"
 source .venv/bin/activate
-fastmcp run main.py:mcp --transport http --port 8000
+fastmcp run app.main:mcp --transport http --port 8000
 ```
 
 On **HTTP** transport, **MCP** clients use `http://127.0.0.1:8000/mcp` . The same process also serves **`POST http://127.0.0.1:8000/v1/rag/query`** (JSON body; default response includes `answer`, `citations`, `follow_up_questions`, and `latency_ms` — per-phase millisecond timings) for plain `curl` scripts.
@@ -168,13 +168,13 @@ See also [`docs/follow-up-questions.md`](docs/follow-up-questions.md) and [`docs
   "mcpServers": {
     "layer-rag-query": {
       "command": "/absolute/path/to/.venv/bin/python",
-      "args": ["/absolute/path/to/layer-rag-query-v1/main.py"]
+      "args": ["/absolute/path/to/layer-rag-query-v1/app/main.py"]
     }
   }
 }
 ```
 
-CLI: `fastmcp run main.py:mcp`
+CLI: `fastmcp run app.main:mcp`
 
 ## RAG + inference (chat API)
 

@@ -1,6 +1,6 @@
 # Follow-up questions (RAG response)
 
-After the main RAG answer and citations are produced, the pipeline can attach **`follow_up_questions`**: short suggested questions for the user to ask next. Implementation lives in [`app/rag_answer.py`](../app/rag_answer.py); HTTP/MCP wiring is in [`main.py`](../main.py).
+After the main RAG answer and citations are produced, the pipeline can attach **`follow_up_questions`**: short suggested questions for the user to ask next. Implementation lives in [`app/rag_answer.py`](../app/rag_answer.py); HTTP/MCP wiring is in [`app/main.py`](../app/main.py).
 
 ## Response shape
 
