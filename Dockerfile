@@ -20,5 +20,5 @@ USER appuser
 
 EXPOSE 8000
 
-# Override listen port without rebuilding (e.g. rare cases where containerPort must match process port).
-CMD ["/bin/sh", "-c", "exec fastmcp run app.main:mcp --transport http --host 0.0.0.0 --port ${HTTP_PORT}"]
+# FastMCP expects file-path target format in this environment.
+CMD ["fastmcp", "run", "-m", "app.main:mcp", "--transport", "http", "--host", "0.0.0.0", "--port", "8000"]

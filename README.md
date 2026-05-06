@@ -121,8 +121,10 @@ Optional [FastMCP](https://gofastmcp.com) server over **stdio** (e.g. Cursor): t
 ```bash
 uv pip install -e ".[mcp]"
 source .venv/bin/activate
-fastmcp run app.main:mcp --transport http --port 8000
+fastmcp run -m app.main
 ```
+
+`-m app.main` is the module-style entrypoint. In this mode, FastMCP uses the module's own startup (`mcp.run()`), so CLI transport/host/port flags are ignored.
 
 On **HTTP** transport, **MCP** clients use `http://127.0.0.1:8000/mcp` . The same process also serves **`POST http://127.0.0.1:8000/v1/rag/query`** (JSON body; default response includes `answer`, `citations`, `follow_up_questions`, and `latency_ms` — per-phase millisecond timings) for plain `curl` scripts.
 
@@ -174,7 +176,7 @@ See also [`docs/follow-up-questions.md`](docs/follow-up-questions.md) and [`docs
 }
 ```
 
-CLI: `fastmcp run app.main:mcp`
+CLI: `fastmcp run -m app.main`
 
 ## RAG + inference (chat API)
 
