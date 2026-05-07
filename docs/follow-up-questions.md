@@ -27,7 +27,7 @@ All values are non-negative integers (wall time from `time.perf_counter()`).
 | `follow_up_chat` | Follow-up candidate generation chat; `0` if follow-ups disabled or failed before rerank. |
 | `follow_up_rerank` | Reranker over candidate question strings; `0` if skipped or no candidates. |
 
-The final `complete_rag_answer done` log line repeats these as top-level JSON fields (`duration_ms` / `latency_*_ms`) for Loki/Grafana.
+The final `complete_rag_answer done` log line repeats these as top-level JSON fields (`duration_ms` / `latency_*_ms`) for structured log pipelines.
 
 ## Pipeline
 

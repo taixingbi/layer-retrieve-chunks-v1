@@ -757,7 +757,6 @@ dependencies = [
     { name = "python-dotenv" },
     { name = "qdrant-client" },
     { name = "rank-bm25" },
-    { name = "tb-loki-central-logger" },
 ]
 
 [package.optional-dependencies]
@@ -779,7 +778,6 @@ requires-dist = [
     { name = "python-dotenv", specifier = ">=1.0.0" },
     { name = "qdrant-client", specifier = ">=1.7.0" },
     { name = "rank-bm25", specifier = ">=0.2.2" },
-    { name = "tb-loki-central-logger", specifier = ">=0.1.5" },
     { name = "uvicorn", extras = ["standard"], marker = "extra == 'mcp'", specifier = ">=0.22" },
 ]
 provides-extras = ["dev", "mcp"]
@@ -1660,15 +1658,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/81/69/17425771797c36cded50b7fe44e850315d039f28b15901ab44839e70b593/starlette-1.0.0.tar.gz", hash = "sha256:6a4beaf1f81bb472fd19ea9b918b50dc3a77a6f2e190a12954b25e6ed5eea149", size = 2655289, upload-time = "2026-03-22T18:29:46.779Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/0b/c9/584bc9651441b4ba60cc4d557d8a547b5aff901af35bda3a4ee30c819b82/starlette-1.0.0-py3-none-any.whl", hash = "sha256:d3ec55e0bb321692d275455ddfd3df75fff145d009685eb40dc91fc66b03d38b", size = 72651, upload-time = "2026-03-22T18:29:45.111Z" },
-]
-
-[[package]]
-name = "tb-loki-central-logger"
-version = "0.1.5"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/3f/70/313e386746c3ca744290210cfd682960c543854a383dd0f0793421b57e2e/tb_loki_central_logger-0.1.5.tar.gz", hash = "sha256:a5df056f21b2c47485152774501cdec139243398e73f2f2f1ba3a2170e48e04a", size = 8166, upload-time = "2026-03-30T14:19:52.609Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/84/d8/1578b652817555f4f42e2832e43b88c4256991cfb9c4e81ce84ba49061ec/tb_loki_central_logger-0.1.5-py3-none-any.whl", hash = "sha256:31168a4da3fcc94863745600d4af559bd1e8ca2e00d9bc3c8684e6d7e8dde307", size = 8997, upload-time = "2026-03-30T14:19:51.276Z" },
 ]
 
 [[package]]

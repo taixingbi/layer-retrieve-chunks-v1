@@ -148,3 +148,6 @@ curl -sS -X POST http://192.168.86.179:30183/v1/rag/query \
     "include_retrieval_hits": true
   }' | jq .
 echo
+
+
+fastmcp run app/main:mcp --transport http --port 8000

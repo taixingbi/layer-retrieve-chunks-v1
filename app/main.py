@@ -17,9 +17,11 @@ from starlette.responses import JSONResponse
 
 from app.asyncio_util import run_async
 from app.http.embed import embed_text as _embed_text_async
-from app.retrieval import query_chunks as _query_chunks_async
+from app.logging_config import logger
+from app.qdrant.client import create_async_client, resolve_connection_params
 from app.rag_answer import complete_rag_answer
 from app.request_context import bind_http_context
+from app.retrieval import query_chunks as _query_chunks_async
 
 
 class AnswerFromInferenceBody(BaseModel):
@@ -228,7 +230,7 @@ async def answer_from_inference_http(request: Request) -> JSONResponse:
     except ValidationError as e:
         return JSONResponse({"detail": e.errors()}, status_code=422)
     try:
-        # method/path/status for stderr + Loki JSON lines (matches ASGI access log when happy path).
+        # method/path/status for stderr JSON lines (matches ASGI access log when happy path).
         with bind_http_context(method, path, status="200"):
             out = await answer_from_inference_payload_async(body)
     except ValueError as e:
@@ -239,6 +241,37 @@ async def answer_from_inference_http(request: Request) -> JSONResponse:
             status_code=502,
         )
     return JSONResponse(out)
+
+
+@mcp.custom_route("/health", methods=["GET"], include_in_schema=False)
+async def health(request: Request) -> JSONResponse:
+    """Liveness: always 200 while the process is up."""
+    with bind_http_context(request.method, request.url.path, status="200"):
+        return JSONResponse({"status": "ok"})
+
+
+@mcp.custom_route("/ready", methods=["GET"], include_in_schema=False)
+async def ready(request: Request) -> JSONResponse:
+    """Readiness: 200 when Qdrant responds to ``get_collections``, else 503."""
+    url, api_key = resolve_connection_params()
+    client = create_async_client(url, api_key)
+    try:
+        try:
+            await client.get_collections()
+        except Exception as e:
+            with bind_http_context(request.method, request.url.path, status="503"):
+                logger.warning(
+                    "ready probe failed",
+                    extra={"error_type": type(e).__name__, "error_message": str(e)},
+                )
+            return JSONResponse(
+                {"status": "not_ready", "detail": type(e).__name__},
+                status_code=503,
+            )
+        with bind_http_context(request.method, request.url.path, status="200"):
+            return JSONResponse({"status": "ready"})
+    finally:
+        await client.close()
 
 
 if __name__ == "__main__":

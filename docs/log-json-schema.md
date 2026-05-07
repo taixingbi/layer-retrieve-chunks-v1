@@ -4,7 +4,7 @@ Structured logs for **layer-rag-query** are emitted by the stdlib logger `layer_
 
 ## Goals
 
-- **Machine-parseable**: single-line JSON suitable for `jq`, Loki, Elasticsearch, or log agents.
+- **Machine-parseable**: single-line JSON suitable for `jq`, log agents, or downstream indexing.
 - **Correlation**: tie log lines to embedding / RAG / HTTP work via `request_id` and `session_id` when context is set (`app.request_context`).
 - **HTTP hints**: optional `method`, `path`, `status` for ASGI routes when context or `extra=` supplies them.
 - **No noise**: omit `error` when there is no exception (no `"error": null`).
@@ -14,7 +14,6 @@ Structured logs for **layer-rag-query** are emitted by the stdlib logger `layer_
 | Sink | When |
 |------|------|
 | **stderr** | Always (INFO and above for the configured handler). |
-| **Grafana Loki** | Optional, when `tb-loki-central-logger` can build auth from env (e.g. `GRAFANA_CLOUD_API_KEY` set). Same JSON line is pushed; Loki adds stream labels (see below). |
 
 ## Base record (every line)
 
@@ -54,25 +53,6 @@ Defined allowlist in code (`_EXTRA_JSON_FIELDS`):
 - `missing`
 
 To add new structured fields for dashboards or alerts, extend that tuple in `logging_config.py` and pass them through `extra=`.
-
-## Loki stream labels (static)
-
-When Loki is enabled, each push uses base labels:
-
-| Label | Typical value |
-|-------|-----------------|
-| `service` | `layer-rag-query` |
-| `component` | `query` |
-| `env` | From `ENV` env var, default `dev` |
-| `version` | Package `__version__` |
-
-Per-line label **`logger`** is set to the Python logger name (e.g. `layer_rag.query`).
-
-## Environment notes
-
-- **Loki**: See README / Grafana docs for `GRAFANA_CLOUD_*` variables used by `basic_auth_from_env()`.
-- **Proxy**: If Loki push fails through an HTTP proxy with errors such as 403, set `LOKI_IGNORE_SYSTEM_PROXY=1` (truthy) to use a client that bypasses system proxy settings.
-- **LogQL by level**: now that `level` is in each JSON line, queries like `{service="layer-rag-query",component="query"} | json | __error__="" | level="ERROR"` work.
 
 ## Example lines
 

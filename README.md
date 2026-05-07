@@ -39,7 +39,7 @@ Set `ENV` in `.env` to `dev`, `qa`, or `prod` (or export it). The second argumen
 
 ## Logging
 
-On `import app`, logs go to **stderr** as **JSON lines** (`ts`, `level`, `request_id`, `session_id`, `method`, `path`, `status`, `message`, …) with [America/New_York](https://docs.python.org/3/library/zoneinfo.html) timestamps; request context is set during `embed_text` / `query_chunks` / RAG / MCP tool calls (`method`/`path`/`status` stay `-` unless you use `bind_http_context` or `extra=` on the log call). Optional **Grafana Loki**: `tb-loki-central-logger` is a dependency; set `GRAFANA_CLOUD_URL`, `GRAFANA_CLOUD_USER`, and `GRAFANA_CLOUD_API_KEY` in the environment (or `.env`) to ship logs (same pattern as [layer-gateway-embed logging](https://github.com/taixingbi/layer-gateway-embed-v1/blob/main/app/logging_config.py)).
+On `import app`, logs go to **stderr** as **JSON lines** (`ts`, `level`, `request_id`, `session_id`, `method`, `path`, `status`, `message`, …) with [America/New_York](https://docs.python.org/3/library/zoneinfo.html) timestamps; request context is set during `embed_text` / `query_chunks` / RAG / MCP tool calls (`method`/`path`/`status` stay `-` unless you use `bind_http_context` or `extra=` on the log call).
 
 ## curl smoke tests
 
@@ -126,7 +126,15 @@ fastmcp run app/main.py:mcp --transport http --host 0.0.0.0 --port 8000
 
 `-m app.main` is the module-style entrypoint. In this mode, FastMCP uses the module's own startup (`mcp.run()`), so CLI transport/host/port flags are ignored.
 
-On **HTTP** transport, **MCP** clients use `http://127.0.0.1:8000/mcp` . The same process also serves **`POST http://127.0.0.1:8000/v1/rag/query`** (JSON body; default response includes `answer`, `citations`, `follow_up_questions`, and `latency_ms` — per-phase millisecond timings) for plain `curl` scripts.
+On **HTTP** transport, **MCP** clients use `http://127.0.0.1:8000/mcp` . The same process also serves **`POST http://127.0.0.1:8000/v1/rag/query`** (JSON body; default response includes `answer`, `citations`, `follow_up_questions`, and `latency_ms` — per-phase millisecond timings) for plain `curl` scripts, plus liveness/readiness probes:
+
+- `GET /health` — always `200 {"status":"ok"}` while the process is up (no I/O, no `request_id` / `session_id` required).
+- `GET /ready` — `200 {"status":"ready"}` when Qdrant responds to `get_collections`; `503 {"status":"not_ready","detail":"<error type>"}` otherwise.
+
+```bash
+curl -sS http://127.0.0.1:8000/health
+curl -sS http://127.0.0.1:8000/ready
+```
 
 ```bash
 curl -sS -X POST http://127.0.0.1:8000/v1/rag/query \
@@ -161,7 +169,7 @@ curl -sS -X POST http://127.0.0.1:8000/v1/rag/query \
   }'
 ```
 
-See also [`docs/follow-up-questions.md`](docs/follow-up-questions.md) and [`docs/log-json-schema.md`](docs/log-json-schema.md).
+See also [`docs/smoke-tests.md`](docs/smoke-tests.md), [`docs/follow-up-questions.md`](docs/follow-up-questions.md), and [`docs/log-json-schema.md`](docs/log-json-schema.md).
 
 **Cursor** (`.cursor/mcp.json` or global MCP settings): point the server at the repo root so `.env` resolves; use your venv’s `python` if needed:
 

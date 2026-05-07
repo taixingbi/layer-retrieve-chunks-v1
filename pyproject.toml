@@ -25,7 +25,6 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "httpx>=0.20.0",
     "rank-bm25>=0.2.2",
-    "tb-loki-central-logger>=0.1.5",
 ]
 
 [project.optional-dependencies]
