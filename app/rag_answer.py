@@ -4,7 +4,7 @@ RAG: ``app.retrieval.query_chunks`` → ranked passages → ``/v1/chat/completio
 
 Run from repo root (requires ``.env``). Defaults match a local vLLM/LMDeploy-style server:
 
-  INFERENCE_URL=http://192.168.86.179:30080 \\
+  INFERENCE_URL=http://192.168.86.179:30180 \\
   INFERENCE_MODEL=Qwen/Qwen2.5-7B-Instruct \\
   python -m app.rag_answer "where is jersey city" -c taixing_knowledge
 

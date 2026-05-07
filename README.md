@@ -214,7 +214,7 @@ CLI: `fastmcp run app/main.py:mcp --transport http --host 0.0.0.0 --port 8000`
 
 ## RAG + inference (chat API)
 
-End-to-end: **hybrid retrieval** (`query_chunks` in `app/retrieval.py`; Qdrant client setup in `app/qdrant/client.py`) → optional **rerank** (`POST /v1/rerank`) → **prompt** → OpenAI-compatible **`POST /v1/chat/completions`** (e.g. Qwen on port 30080).
+End-to-end: **hybrid retrieval** (`query_chunks` in `app/retrieval.py`; Qdrant client setup in `app/qdrant/client.py`) → optional **rerank** (`POST /v1/rerank`) → **prompt** → OpenAI-compatible **`POST /v1/chat/completions`** (e.g. Qwen on port 30180).
 
 ```bash
 # Or set INFERENCE_URL / INFERENCE_MODEL in `.env` (see `.env.example`)
@@ -223,7 +223,7 @@ python -m app.rag_answer "where is jersey city" -c taixing_knowledge -k 5
 
 Useful flags: `--single-pass` (one chat, no context widen on `NOT_FOUND`), `--no-reranker`, `--no-follow-ups`, `--retrieval-hits` (print `retrieval_hits` in the JSON, same shape as HTTP when the debug flags are on), `--follow-up-candidates` / `--follow-up-final`.
 
-Same flow as: retrieve grounded passages, join them as context, then call your stack’s chat endpoint with `messages` (see `app/rag_answer.py`). Inspect the OpenAPI UI at `http://<host>:30080/docs` for extra fields (temperature, etc.) if you extend the script.
+Same flow as: retrieve grounded passages, join them as context, then call your stack’s chat endpoint with `messages` (see `app/rag_answer.py`). Inspect the OpenAPI UI at `http://<host>:30180/docs` for extra fields (temperature, etc.) if you extend the script.
 
 The MCP tool `answer_from_inference` accepts the same optional booleans as the HTTP body for retrieval hits (`include_retrieval_hits`, `debug`, `trace_retrieval`, `return_retrieval_hits`).
 
