@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import httpx
 
+from app.http._correlation import correlation_headers
 from app.logging_config import logger
 
 
@@ -14,10 +15,14 @@ async def rerank_texts(
     query: str,
     documents: list[str],
     top_n: int,
+    request_id: str,
+    session_id: str,
+    trace_id: str | None = None,
     timeout: float = 30.0,
 ) -> list[dict]:
     """
-    Return ranked rows with ``index`` and ``score``.
+    Return ranked rows with ``index`` and ``score``. Correlation forwarded as
+    ``X-Request-Id`` / ``X-Session-Id`` / ``X-Trace-Id`` (last only when set).
 
     Expected API shape:
     {
@@ -33,11 +38,15 @@ async def rerank_texts(
         "documents": documents,
         "top_n": min(top_n, len(documents)),
     }
+    headers = {
+        "Content-Type": "application/json",
+        **correlation_headers(request_id, session_id, trace_id=trace_id),
+    }
     async with httpx.AsyncClient() as client:
         r = await client.post(
             url,
             json=payload,
-            headers={"Content-Type": "application/json"},
+            headers=headers,
             timeout=timeout,
         )
         r.raise_for_status()

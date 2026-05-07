@@ -149,10 +149,13 @@ curl -sS -X POST "${EMBEDDING_URL}/v1/embeddings" \
 
 ## Inference / chat (upstream)
 
-OpenAI-compatible `POST /v1/chat/completions` (used by [`app/rag_answer.py`](../app/rag_answer.py)).
+OpenAI-compatible `POST /v1/chat/completions` (used by [`app/rag_answer.py`](../app/rag_answer.py)). Same correlation headers as embedding (`X-Trace-Id` forwarded only when set).
 
 ```bash
 curl -sS -X POST "${INFERENCE_URL}/v1/chat/completions" \
+  -H "X-Request-Id: request_id_1" \
+  -H "X-Session-Id: session_id_1" \
+  -H "X-Trace-Id: trace-001" \
   -H "Content-Type: application/json" \
   -d "{\"model\": \"${INFERENCE_MODEL}\", \"messages\": [{\"role\": \"user\", \"content\": \"where is jersey city\"}], \"max_tokens\": 50}"
 ```
@@ -165,10 +168,13 @@ curl -sS -o /dev/null -w "%{http_code}\n" "${INFERENCE_URL}/docs"
 
 ## Rerank API (upstream)
 
-Used by [`app/http/rerank.py`](../app/http/rerank.py) when `use_reranker=true`. Path is `POST /v1/rerank` on `RERANK_URL`.
+Used by [`app/http/rerank.py`](../app/http/rerank.py) when `use_reranker=true`. Path is `POST /v1/rerank` on `RERANK_URL`. Same correlation headers as embedding (`X-Trace-Id` forwarded only when set).
 
 ```bash
 curl -sS -X POST "${RERANK_URL}/v1/rerank" \
+  -H "X-Request-Id: request_id_1" \
+  -H "X-Session-Id: session_id_1" \
+  -H "X-Trace-Id: trace-001" \
   -H "Content-Type: application/json" \
   -d "{
     \"model\": \"${RERANK_MODEL}\",

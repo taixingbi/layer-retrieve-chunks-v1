@@ -124,6 +124,9 @@ async def _generate_follow_up_candidates(
     min_count: int,
     max_count: int,
     max_tokens: int,
+    request_id: str,
+    session_id: str,
+    trace_id: str | None = None,
 ) -> list[str]:
     """One chat call: JSON array of between ``min_count`` and ``max_count`` question strings."""
     sys = (
@@ -144,6 +147,9 @@ async def _generate_follow_up_candidates(
         model=model,
         messages=[{"role": "system", "content": sys}, {"role": "user", "content": user}],
         max_tokens=max_tokens,
+        request_id=request_id,
+        session_id=session_id,
+        trace_id=trace_id,
     )
     candidates = _parse_follow_up_json(raw)
     if not candidates and raw.strip():
@@ -162,6 +168,9 @@ async def _rerank_follow_up_strings(
     rerank_url: str,
     rerank_model: str,
     top_n: int,
+    request_id: str,
+    session_id: str,
+    trace_id: str | None = None,
 ) -> list[str]:
     """Rerank candidate questions; return top ``top_n`` strings in score order."""
     if not candidates:
@@ -174,6 +183,9 @@ async def _rerank_follow_up_strings(
             query=question,
             documents=candidates,
             top_n=n,
+            request_id=request_id,
+            session_id=session_id,
+            trace_id=trace_id,
         )
     except Exception as e:
         logger.warning("follow_up rerank failed reason=%s", str(e))
@@ -210,6 +222,9 @@ async def _follow_up_questions(
     max_tokens_main: int,
     rerank_url: str,
     rerank_model: str,
+    request_id: str,
+    session_id: str,
+    trace_id: str | None = None,
 ) -> tuple[list[str], int, int]:
     """Returns ``(questions, chat_ms, rerank_ms)``; times are zero when skipped or on failure."""
     if not chunks_used:
@@ -231,6 +246,9 @@ async def _follow_up_questions(
             min_count=min_gen,
             max_count=max_gen,
             max_tokens=gen_budget,
+            request_id=request_id,
+            session_id=session_id,
+            trace_id=trace_id,
         )
     except Exception as e:
         logger.warning("follow_up generation failed reason=%s", str(e))
@@ -245,6 +263,9 @@ async def _follow_up_questions(
         rerank_url=rerank_url,
         rerank_model=rerank_model,
         top_n=follow_up_final,
+        request_id=request_id,
+        session_id=session_id,
+        trace_id=trace_id,
     )
     return ranked, gen_ms, _elapsed_ms(rr_t0)
 
@@ -379,6 +400,9 @@ async def _rerank_chunks(
     rerank_url: str,
     rerank_model: str,
     rerank_return_top_k: int,
+    request_id: str,
+    session_id: str,
+    trace_id: str | None = None,
 ) -> list[dict]:
     if not chunks:
         return []
@@ -388,6 +412,9 @@ async def _rerank_chunks(
         query=question,
         documents=[(c.get("text") or "") for c in chunks],
         top_n=min(rerank_return_top_k, len(chunks)),
+        request_id=request_id,
+        session_id=session_id,
+        trace_id=trace_id,
     )
     out: list[dict] = []
     for rank, row in enumerate(rows, start=1):
@@ -549,6 +576,9 @@ async def complete_rag_answer(
                     rerank_url=rerank_base,
                     rerank_model=rerank_model,
                     rerank_return_top_k=rerank_return_top_k,
+                    request_id=request_id,
+                    session_id=session_id,
+                    trace_id=trace_id,
                 )
                 chunk_rerank_ms = _elapsed_ms(t_rr)
                 if reranked:
@@ -599,6 +629,9 @@ async def complete_rag_answer(
                 model=model,
                 messages=messages,
                 max_tokens=max_tokens,
+                request_id=request_id,
+                session_id=session_id,
+                trace_id=trace_id,
             )
             chat_ms_total += _elapsed_ms(t_chat)
             if not _answer_needs_more_context(last_answer):
@@ -642,6 +675,9 @@ async def complete_rag_answer(
                 max_tokens_main=max_tokens,
                 rerank_url=rerank_base,
                 rerank_model=rerank_model,
+                request_id=request_id,
+                session_id=session_id,
+                trace_id=trace_id,
             )
         total_ms = _elapsed_ms(wall_t0)
         latency_ms: dict[str, int] = {

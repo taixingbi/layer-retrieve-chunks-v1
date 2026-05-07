@@ -41,6 +41,8 @@ Set `ENV` in `.env` to `dev`, `qa`, or `prod` (or export it). The second argumen
 
 On `import app`, logs go to **stderr** as **JSON lines** (`ts`, `level`, `request_id`, `session_id`, `trace_id`, `method`, `path`, `status`, `message`, …) with [America/New_York](https://docs.python.org/3/library/zoneinfo.html) timestamps; request context is set during `embed_text` / `query_chunks` / RAG / MCP tool calls (`method`/`path`/`status` stay `-` unless you use `bind_http_context` or `extra=` on the log call). `trace_id` is `"-"` unless set via `bind_request_context(..., trace_id=...)` (e.g. `X-Trace-Id` on `/v1/rag/query`).
 
+Correlation IDs are forwarded as HTTP headers on every upstream call — embedding (`/v1/embeddings`), rerank (`/v1/rerank`), and chat (`/v1/chat/completions`) — as `X-Request-Id`, `X-Session-Id`, and (when set) `X-Trace-Id`, so logs from all four services can be stitched together by `request_id` / `session_id` / `trace_id`.
+
 ## curl smoke tests
 
 Load variables from `.env` (or substitute literals). Use these to verify each dependency before running Python.
@@ -58,12 +60,15 @@ curl -sS -X POST "${EMBEDDING_URL}/v1/embeddings" \
   -d "{\"model\": \"${EMBEDDING_MODEL}\", \"input\": \"hello world\"}"
 ```
 
-**Inference / chat** — OpenAI-compatible `POST /v1/chat/completions` (see `INFERENCE_URL` / `INFERENCE_MODEL` in `.env`):
+**Inference / chat** — OpenAI-compatible `POST /v1/chat/completions` (see `INFERENCE_URL` / `INFERENCE_MODEL` in `.env`). Same correlation headers as embedding (`X-Trace-Id` forwarded only when set):
 
 ```bash
 set -a && source .env && set +a
 
 curl -sS -X POST "${INFERENCE_URL}/v1/chat/completions" \
+  -H "X-Request-Id: request_id_1" \
+  -H "X-Session-Id: session_id_1" \
+  -H "X-Trace-Id: trace-001" \
   -H "Content-Type: application/json" \
   -d "{\"model\": \"${INFERENCE_MODEL}\", \"messages\": [{\"role\": \"user\", \"content\": \"where is jersey city\"}], \"max_tokens\": 50}"
 ```
