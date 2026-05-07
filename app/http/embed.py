@@ -9,16 +9,25 @@ from app.logging_config import logger
 from app.request_context import bind_request_context
 
 
-def _embed_headers(request_id: str, session_id: str) -> dict[str, str]:
+def _embed_headers(
+    request_id: str,
+    session_id: str,
+    *,
+    trace_id: str | None = None,
+) -> dict[str, str]:
     if not request_id or not request_id.strip():
         raise ValueError("request_id is required and must be non-empty.")
     if not session_id or not session_id.strip():
         raise ValueError("session_id is required and must be non-empty.")
-    return {
+    h: dict[str, str] = {
         "Content-Type": "application/json",
         "X-Request-Id": request_id,
         "X-Session-Id": session_id,
     }
+    t = (trace_id or "").strip()
+    if t:
+        h["X-Trace-Id"] = t
+    return h
 
 
 async def embed_texts(
@@ -26,6 +35,7 @@ async def embed_texts(
     *,
     request_id: str,
     session_id: str,
+    trace_id: str | None = None,
     model: str | None = None,
     base_url: str | None = None,
     timeout: float = 30.0,
@@ -37,8 +47,8 @@ async def embed_texts(
     base = (base_url or get_embedding_url()).rstrip("/")
     url = f"{base}/v1/embeddings"
     payload = {"model": m, "input": texts}
-    headers = _embed_headers(request_id, session_id)
-    with bind_request_context(request_id, session_id):
+    headers = _embed_headers(request_id, session_id, trace_id=trace_id)
+    with bind_request_context(request_id, session_id, trace_id=trace_id):
         async with httpx.AsyncClient() as client:
             r = await client.post(url, json=payload, headers=headers, timeout=timeout)
             r.raise_for_status()
@@ -65,6 +75,7 @@ async def embed_text(
     *,
     request_id: str,
     session_id: str,
+    trace_id: str | None = None,
     model: str | None = None,
     base_url: str | None = None,
     timeout: float = 30.0,
@@ -74,6 +85,7 @@ async def embed_text(
         [text],
         request_id=request_id,
         session_id=session_id,
+        trace_id=trace_id,
         model=model,
         base_url=base_url,
         timeout=timeout,

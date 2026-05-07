@@ -16,6 +16,7 @@ from .request_context import (
     get_http_status,
     get_request_id,
     get_session_id,
+    get_trace_id,
 )
 
 logger = logging.getLogger("layer_rag.query")
@@ -55,6 +56,8 @@ class _RequestContextFilter(logging.Filter):
         # When request_id is missing, keep session_id as "-" in logs (no partial correlation).
         record.request_id = "-" if rid == "-" else rid
         record.session_id = "-" if rid == "-" else sid
+        tid = get_trace_id()
+        record.trace_id = tid if tid != "-" else "-"
         record.method = get_http_method()
         record.path = get_http_path()
         # ASGI response.start runs after the route returns; logs inside the route
@@ -77,6 +80,7 @@ class _JsonFormatter(logging.Formatter):
             "level": record.levelname,
             "request_id": getattr(record, "request_id", "-"),
             "session_id": getattr(record, "session_id", "-"),
+            "trace_id": getattr(record, "trace_id", "-"),
             "method": getattr(record, "method", "-"),
             "path": getattr(record, "path", "-"),
             "status": getattr(record, "status", "-"),

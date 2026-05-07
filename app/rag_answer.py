@@ -420,6 +420,7 @@ async def complete_rag_answer(
     follow_up_candidates: int = 8,
     follow_up_final: int = 3,
     include_retrieval_hits: bool = False,
+    trace_id: str | None = None,
 ) -> tuple[str, list[dict], list[str], dict[str, int], list[dict]]:
     """
     ``query_chunks`` → numbered context → ``POST .../v1/chat/completions``.
@@ -494,7 +495,7 @@ async def complete_rag_answer(
         ),
     }
 
-    with bind_request_context(request_id, session_id):
+    with bind_request_context(request_id, session_id, trace_id=trace_id):
         wall_t0 = time.perf_counter()
         logger.info(
             "complete_rag_answer start collection_base=%s k=%s k_max=%s rerank_top_n=%s "
@@ -514,7 +515,10 @@ async def complete_rag_answer(
         )
         t_embed = time.perf_counter()
         query_vector = await embed_text(
-            question, request_id=request_id, session_id=session_id
+            question,
+            request_id=request_id,
+            session_id=session_id,
+            trace_id=trace_id,
         )
         embed_ms = _elapsed_ms(t_embed)
         retrieve_pool = max(k_max, rerank_top_n)
@@ -525,6 +529,7 @@ async def complete_rag_answer(
             k=retrieve_pool,
             request_id=request_id,
             session_id=session_id,
+            trace_id=trace_id,
             query_vector=query_vector,
             qdrant_limit_override=retrieve_pool,
         )

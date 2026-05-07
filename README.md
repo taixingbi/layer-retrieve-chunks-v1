@@ -20,7 +20,7 @@ Create `.env` in the project root (loaded automatically on `import app`) or expo
 cp .env.example .env
 ```
 
-Importing `app` raises `ValueError` if any required variable below is missing from the environment. Empty values are allowed for `QDRANT_API_KEY`. You must pass non-empty `request_id` and `session_id` to `embed_text` / `query_chunks` for `X-Request-Id` and `X-Session-Id` (no auto-UUIDs).
+Importing `app` raises `ValueError` if any required variable below is missing from the environment. Empty values are allowed for `QDRANT_API_KEY`. You must pass non-empty `request_id` and `session_id` to `embed_text` / `query_chunks` for `X-Request-Id` and `X-Session-Id` (no auto-UUIDs); `trace_id` is optional and forwarded as `X-Trace-Id` when set. On `POST /v1/rag/query`, correlation is read **only from headers** (`X-Request-Id`, `X-Session-Id`, `X-Trace-Id`); missing request or session headers get fresh UUIDs for that call. Putting `request_id`, `session_id`, or `trace_id` in the JSON body returns **400**.
 
 | Variable | Description |
 |----------|-------------|
@@ -39,13 +39,13 @@ Set `ENV` in `.env` to `dev`, `qa`, or `prod` (or export it). The second argumen
 
 ## Logging
 
-On `import app`, logs go to **stderr** as **JSON lines** (`ts`, `level`, `request_id`, `session_id`, `method`, `path`, `status`, `message`, …) with [America/New_York](https://docs.python.org/3/library/zoneinfo.html) timestamps; request context is set during `embed_text` / `query_chunks` / RAG / MCP tool calls (`method`/`path`/`status` stay `-` unless you use `bind_http_context` or `extra=` on the log call).
+On `import app`, logs go to **stderr** as **JSON lines** (`ts`, `level`, `request_id`, `session_id`, `trace_id`, `method`, `path`, `status`, `message`, …) with [America/New_York](https://docs.python.org/3/library/zoneinfo.html) timestamps; request context is set during `embed_text` / `query_chunks` / RAG / MCP tool calls (`method`/`path`/`status` stay `-` unless you use `bind_http_context` or `extra=` on the log call). `trace_id` is `"-"` unless set via `bind_request_context(..., trace_id=...)` (e.g. `X-Trace-Id` on `/v1/rag/query`).
 
 ## curl smoke tests
 
 Load variables from `.env` (or substitute literals). Use these to verify each dependency before running Python.
 
-**Embedding API** — same paths and headers as `app/http/embed.py` (`/v1/embeddings`):
+**Embedding API** — same paths and headers as `app/http/embed.py` (`/v1/embeddings`). `X-Trace-Id` is forwarded only when set:
 
 ```bash
 set -a && source .env && set +a   # or: export EMBEDDING_URL=... etc.
@@ -53,6 +53,7 @@ set -a && source .env && set +a   # or: export EMBEDDING_URL=... etc.
 curl -sS -X POST "${EMBEDDING_URL}/v1/embeddings" \
   -H "X-Request-Id: request_id_1" \
   -H "X-Session-Id: session_id_1" \
+  -H "X-Trace-Id: trace-001" \
   -H "Content-Type: application/json" \
   -d "{\"model\": \"${EMBEDDING_MODEL}\", \"input\": \"hello world\"}"
 ```
@@ -89,13 +90,15 @@ from app import embed_text, query_chunks
 from qdrant_client import AsyncQdrantClient
 
 async def main():
-    # request_id / session_id are required (X-Request-Id / X-Session-Id on the embedding API)
+    # request_id / session_id are required (X-Request-Id / X-Session-Id on the embedding API);
+    # trace_id is optional (X-Trace-Id when set).
     chunks = await query_chunks(
         "who is taixing's visa status",
         "taixing_knowledge",
         k=5,
         request_id="request_id_1",
         session_id="session_id_1",
+        trace_id="trace-001",
     )
 
     # Pass your own AsyncQdrantClient (or omit ``client=`` to open one per call)
@@ -109,7 +112,9 @@ async def main():
             client=client,
         )
 
-    vector = await embed_text("some text", request_id="r1", session_id="s1")
+    vector = await embed_text(
+        "some text", request_id="r1", session_id="s1", trace_id="trace-001"
+    )
 
 asyncio.run(main())
 ```
@@ -128,7 +133,7 @@ fastmcp run app/main.py:mcp --transport http --host 0.0.0.0 --port 8000
 
 On **HTTP** transport, **MCP** clients use `http://127.0.0.1:8000/mcp` . The same process also serves **`POST http://127.0.0.1:8000/v1/rag/query`** (JSON body; default response includes `answer`, `citations`, `follow_up_questions`, and `latency_ms` — per-phase millisecond timings) for plain `curl` scripts, plus liveness/readiness probes:
 
-- `GET /health` — always `200 {"status":"ok"}` while the process is up (no I/O, no `request_id` / `session_id` required).
+- `GET /health` — always `200 {"status":"ok"}` while the process is up (no I/O, no headers required).
 - `GET /ready` — `200 {"status":"ready"}` when Qdrant responds to `get_collections`; `503 {"status":"not_ready","detail":"<error type>"}` otherwise.
 
 ```bash
@@ -136,14 +141,30 @@ curl -sS http://127.0.0.1:8000/health
 curl -sS http://127.0.0.1:8000/ready
 ```
 
+Correlation on `/v1/rag/query` is **header-only** (never put `request_id`, `session_id`, or `trace_id` in the JSON body — **400**). `X-Request-Id` and `X-Session-Id` are optional: if either header is missing or blank, the server generates a UUID for that call. `X-Trace-Id` is optional and is not auto-generated. On **200** responses, `X-Request-Id`, `X-Session-Id`, and `X-Trace-Id` (when sent) are echoed in response headers so clients can confirm or read server-generated IDs (`curl -D -`).
+
 ```bash
 curl -sS -X POST http://127.0.0.1:8000/v1/rag/query \
   -H "Content-Type: application/json" \
   -d '{
     "question": "what is taixing visa",
     "collection_base": "taixing_knowledge",
-    "request_id": "req-abc123",
-    "session_id": "ses-xyz789",
+    "k": 5,
+    "k_max": 50
+  }'
+```
+
+With explicit correlation (recommended for gateways and log stitching):
+
+```bash
+curl -sS -X POST http://127.0.0.1:8000/v1/rag/query \
+  -H "Content-Type: application/json" \
+  -H "X-Request-Id: req-abc123" \
+  -H "X-Session-Id: ses-xyz789" \
+  -H "X-Trace-Id: trace-001" \
+  -d '{
+    "question": "what is taixing visa",
+    "collection_base": "taixing_knowledge",
     "k": 5,
     "k_max": 50
   }'
@@ -158,11 +179,11 @@ curl -sS -X POST http://127.0.0.1:8000/v1/rag/query \
 ```bash
 curl -sS -X POST http://127.0.0.1:8000/v1/rag/query \
   -H "Content-Type: application/json" \
+  -H "X-Request-Id: req-abc123" \
+  -H "X-Session-Id: ses-xyz789" \
   -d '{
     "question": "what is taixing visa",
     "collection_base": "taixing_knowledge",
-    "request_id": "req-abc123",
-    "session_id": "ses-xyz789",
     "k": 5,
     "k_max": 50,
     "include_retrieval_hits": true

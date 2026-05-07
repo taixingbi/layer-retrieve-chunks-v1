@@ -7,6 +7,7 @@ Run: ``python -m app.main`` or ``fastmcp run app/main.py:mcp``
 """
 from __future__ import annotations
 
+import uuid
 from typing import Any
 
 import httpx
@@ -23,12 +24,21 @@ from app.rag_answer import complete_rag_answer
 from app.request_context import bind_http_context
 from app.retrieval import query_chunks as _query_chunks_async
 
+_FORBIDDEN_RAG_BODY_KEYS = frozenset({"request_id", "session_id", "trace_id"})
+
+
+def _correlation_from_headers(request: Request) -> tuple[str, str, str | None]:
+    """Read ``X-Request-Id``, ``X-Session-Id``, ``X-Trace-Id`` (case-insensitive). Trace may be absent."""
+    rid = (request.headers.get("x-request-id") or "").strip()
+    sid = (request.headers.get("x-session-id") or "").strip()
+    tid_raw = (request.headers.get("x-trace-id") or "").strip()
+    tid: str | None = tid_raw if tid_raw else None
+    return rid, sid, tid
+
 
 class AnswerFromInferenceBody(BaseModel):
     question: str
     collection_base: str
-    request_id: str = Field(..., min_length=1)
-    session_id: str = Field(..., min_length=1)
     k: int = Field(default=5, ge=1)
     k_max: int = Field(default=50, ge=1)
     max_tokens: int | None = None
@@ -85,6 +95,10 @@ def _answer_payload(
 
 async def answer_from_inference_payload_async(
     body: AnswerFromInferenceBody,
+    *,
+    request_id: str,
+    session_id: str,
+    trace_id: str | None = None,
 ) -> dict[str, Any]:
     """Run RAG + chat (async). Raise ``ValueError`` or ``httpx.HTTPStatusError`` on failure."""
     if body.k_max < body.k:
@@ -93,8 +107,8 @@ async def answer_from_inference_payload_async(
     answer, citations, follow_up_questions, latency_ms, retrieval_hits = await complete_rag_answer(
         body.question,
         body.collection_base,
-        body.request_id,
-        body.session_id,
+        request_id,
+        session_id,
         k=body.k,
         k_max=body.k_max,
         max_tokens=body.max_tokens,
@@ -108,6 +122,7 @@ async def answer_from_inference_payload_async(
         follow_up_candidates=body.follow_up_candidates,
         follow_up_final=body.follow_up_final,
         include_retrieval_hits=wants_hits,
+        trace_id=trace_id,
     )
     return _answer_payload(
         answer=answer,
@@ -217,7 +232,12 @@ def answer_from_inference(
 
 @mcp.custom_route("/v1/rag/query", methods=["POST"])
 async def answer_from_inference_http(request: Request) -> JSONResponse:
-    """JSON body for ``curl`` when using FastMCP ``--transport http``."""
+    """JSON body for ``curl`` when using FastMCP ``--transport http``.
+
+    Correlation: ``X-Request-Id``, ``X-Session-Id``, ``X-Trace-Id`` (optional). If request or
+    session id headers are missing or blank, new UUIDs are generated for this call only.
+    Do not send ``request_id``, ``session_id``, or ``trace_id`` in the JSON body (400).
+    """
     method = request.method
     path = request.url.path
 
@@ -225,6 +245,23 @@ async def answer_from_inference_http(request: Request) -> JSONResponse:
         data = await request.json()
     except Exception:
         return JSONResponse({"detail": "Invalid JSON"}, status_code=400)
+    if not isinstance(data, dict):
+        return JSONResponse({"detail": "JSON body must be an object"}, status_code=400)
+    if _FORBIDDEN_RAG_BODY_KEYS & data.keys():
+        return JSONResponse(
+            {
+                "detail": (
+                    "request_id, session_id, and trace_id must not appear in the JSON body; "
+                    "use X-Request-Id, X-Session-Id, and X-Trace-Id headers instead."
+                )
+            },
+            status_code=400,
+        )
+    request_id, session_id, trace_id = _correlation_from_headers(request)
+    if not request_id:
+        request_id = str(uuid.uuid4())
+    if not session_id:
+        session_id = str(uuid.uuid4())
     try:
         body = AnswerFromInferenceBody.model_validate(data)
     except ValidationError as e:
@@ -232,7 +269,12 @@ async def answer_from_inference_http(request: Request) -> JSONResponse:
     try:
         # method/path/status for stderr JSON lines (matches ASGI access log when happy path).
         with bind_http_context(method, path, status="200"):
-            out = await answer_from_inference_payload_async(body)
+            out = await answer_from_inference_payload_async(
+                body,
+                request_id=request_id,
+                session_id=session_id,
+                trace_id=trace_id,
+            )
     except ValueError as e:
         return JSONResponse({"detail": str(e)}, status_code=400)
     except httpx.HTTPStatusError as e:
@@ -240,7 +282,13 @@ async def answer_from_inference_http(request: Request) -> JSONResponse:
             {"detail": e.response.text or str(e)},
             status_code=502,
         )
-    return JSONResponse(out)
+    hdrs: dict[str, str] = {
+        "X-Request-Id": request_id,
+        "X-Session-Id": session_id,
+    }
+    if trace_id:
+        hdrs["X-Trace-Id"] = trace_id
+    return JSONResponse(out, headers=hdrs)
 
 
 @mcp.custom_route("/health", methods=["GET"], include_in_schema=False)

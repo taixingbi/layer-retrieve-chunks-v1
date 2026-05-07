@@ -43,13 +43,16 @@ async def _search_dense(
     *,
     request_id: str,
     session_id: str,
+    trace_id: str | None = None,
     query_vector: list[float] | None = None,
 ) -> list[dict]:
     """Dense vector search via Qdrant. Pass ``query_vector`` to skip re-embedding the query."""
     if query_vector is not None:
         vector = query_vector
     else:
-        vector = await embed_text(query, request_id=request_id, session_id=session_id)
+        vector = await embed_text(
+            query, request_id=request_id, session_id=session_id, trace_id=trace_id
+        )
     response = await client.query_points(
         collection_name=collection_name,
         query=vector,
@@ -210,6 +213,7 @@ async def query_chunks(
     *,
     request_id: str,
     session_id: str,
+    trace_id: str | None = None,
     top_k_dense: int = TOP_K_DENSE,
     rrf_k: int = RRF_K,
     qdrant_url: str | None = None,
@@ -246,7 +250,7 @@ async def query_chunks(
     2. Lexical: use ``lexical_retriever`` results, or BM25-over-dense fallback
     3. RRF: fuse both rankings, return top k
     """
-    with bind_request_context(request_id, session_id):
+    with bind_request_context(request_id, session_id, trace_id=trace_id):
 
         async def _run(ac: AsyncQdrantClient) -> list[dict]:
             coll = _qdrant_collection_name(collection_name)
@@ -270,6 +274,7 @@ async def query_chunks(
                 k=dense_limit,
                 request_id=request_id,
                 session_id=session_id,
+                trace_id=trace_id,
                 query_vector=query_vector,
             )
             if not dense_hits:

@@ -26,9 +26,19 @@ curl -sS -o /dev/stdout -w "\nHTTP %{http_code}\n" http://127.0.0.1:8000/ready
 
 Expected when Qdrant is reachable: `200 {"status":"ready"}`. When Qdrant is unreachable / mis-configured: `503 {"status":"not_ready","detail":"<ExceptionType>"}`.
 
-## RAG query — default response
+## Correlation headers
 
-`answer`, `citations`, `follow_up_questions`, `latency_ms`.
+`POST /v1/rag/query` reads correlation IDs **only from headers**. Putting `request_id`, `session_id`, or `trace_id` in the JSON body returns **400**.
+
+| Header | Required | Notes |
+|--------|----------|-------|
+| `X-Request-Id` | no | If missing or blank, the server generates a UUID for this call. Forwarded to the embedding API; appears as `request_id` in stderr JSON logs. |
+| `X-Session-Id` | no | If missing or blank, the server generates a UUID for this call. Forwarded to the embedding API; appears as `session_id` in stderr JSON logs. |
+| `X-Trace-Id` | no | When set, forwarded to embedding API as `X-Trace-Id` and appears as `trace_id` in stderr JSON logs (else `"-"`). Not auto-generated. |
+
+## RAG query — minimal (no correlation headers)
+
+Same as default; logs and embedding calls use the server-generated `request_id` / `session_id` for this request. On **200** responses, the same values are echoed in `X-Request-Id` and `X-Session-Id` response headers (use `curl -D -` to capture them).
 
 ```bash
 curl -sS -X POST http://127.0.0.1:8000/v1/rag/query \
@@ -36,8 +46,24 @@ curl -sS -X POST http://127.0.0.1:8000/v1/rag/query \
   -d '{
     "question": "what is taixing visa",
     "collection_base": "taixing_knowledge",
-    "request_id": "req-abc123",
-    "session_id": "ses-xyz789",
+    "k": 5,
+    "k_max": 50
+  }'
+```
+
+## RAG query — default response
+
+`answer`, `citations`, `follow_up_questions`, `latency_ms`. With explicit correlation (recommended behind gateways). On **200** responses, `X-Request-Id`, `X-Session-Id`, and `X-Trace-Id` (when sent) are echoed on the response.
+
+```bash
+curl -sS -X POST http://127.0.0.1:8000/v1/rag/query \
+  -H "Content-Type: application/json" \
+  -H "X-Request-Id: req-abc123" \
+  -H "X-Session-Id: ses-xyz789" \
+  -H "X-Trace-Id: trace-001" \
+  -d '{
+    "question": "what is taixing visa",
+    "collection_base": "taixing_knowledge",
     "k": 5,
     "k_max": 50
   }'
@@ -50,11 +76,11 @@ Adds `retrieval_hits` to the response. Equivalent flags: `include_retrieval_hits
 ```bash
 curl -sS -X POST http://127.0.0.1:8000/v1/rag/query \
   -H "Content-Type: application/json" \
+  -H "X-Request-Id: req-abc123" \
+  -H "X-Session-Id: ses-xyz789" \
   -d '{
     "question": "what is taixing visa",
     "collection_base": "taixing_knowledge",
-    "request_id": "req-abc123",
-    "session_id": "ses-xyz789",
     "k": 5,
     "k_max": 50,
     "include_retrieval_hits": true
@@ -68,11 +94,11 @@ Single-pass evaluation; no chat for follow-ups, no cross-encoder rerank.
 ```bash
 curl -sS -X POST http://127.0.0.1:8000/v1/rag/query \
   -H "Content-Type: application/json" \
+  -H "X-Request-Id: req-abc123" \
+  -H "X-Session-Id: ses-xyz789" \
   -d '{
     "question": "what is taixing visa",
     "collection_base": "taixing_knowledge",
-    "request_id": "req-abc123",
-    "session_id": "ses-xyz789",
     "k": 5,
     "k_max": 50,
     "use_reranker": false,
@@ -88,24 +114,35 @@ curl -sS -X POST http://127.0.0.1:8000/v1/rag/query \
 ```bash
 curl -sS -X POST http://127.0.0.1:8000/v1/rag/query \
   -H "Content-Type: application/json" \
+  -H "X-Request-Id: req-abc123" \
+  -H "X-Session-Id: ses-xyz789" \
   -d '{
     "question": "what is taixing visa",
     "collection_base": "taixing_knowledge",
-    "request_id": "req-abc123",
-    "session_id": "ses-xyz789",
     "follow_up_candidates": 10,
     "follow_up_final": 5
   }'
 ```
 
+## RAG query — error cases
+
+```bash
+curl -sS -o /dev/stdout -w "\nHTTP %{http_code}\n" \
+  -X POST http://127.0.0.1:8000/v1/rag/query \
+  -H "Content-Type: application/json" \
+  -d '{"question":"q","collection_base":"taixing_knowledge","request_id":"x","session_id":"y"}'
+# -> HTTP 400 (request_id/session_id/trace_id must not appear in body)
+```
+
 ## Embedding API (upstream)
 
-Same path/headers as [`app/http/embed.py`](../app/http/embed.py) (`POST /v1/embeddings`).
+Same path/headers as [`app/http/embed.py`](../app/http/embed.py) (`POST /v1/embeddings`). `X-Trace-Id` is forwarded only when present.
 
 ```bash
 curl -sS -X POST "${EMBEDDING_URL}/v1/embeddings" \
   -H "X-Request-Id: request_id_1" \
   -H "X-Session-Id: session_id_1" \
+  -H "X-Trace-Id: trace-001" \
   -H "Content-Type: application/json" \
   -d "{\"model\": \"${EMBEDDING_MODEL}\", \"input\": \"hello world\"}"
 ```
