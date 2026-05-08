@@ -53,6 +53,11 @@ Defined allowlist in code (`_EXTRA_JSON_FIELDS`):
 - `error_message`
 - `missing`
 - `follow_up_empty_reason` (stable code when `follow_up_questions` resolves to `[]`; see `docs/follow-up-questions.md`)
+- `follow_up_raw_reply` — full assistant content from the follow-up generation chat call (newlines escaped, not truncated). Present only on `follow_up_questions_ok` lines.
+- `follow_up_candidates_full` — array of all parsed/de-duped candidate questions before rerank.
+- `follow_up_candidates_count` — `len(follow_up_candidates_full)`.
+- `follow_up_ranked` — array of final questions returned to the client (rerank top-N).
+- `follow_up_ranked_count` — `len(follow_up_ranked)`.
 
 To add new structured fields for dashboards or alerts, extend that tuple in `logging_config.py` and pass them through `extra=`.
 

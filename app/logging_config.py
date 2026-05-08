@@ -40,6 +40,11 @@ _EXTRA_JSON_FIELDS = (
     "error_message",
     "missing",
     "follow_up_empty_reason",
+    "follow_up_raw_reply",
+    "follow_up_candidates_full",
+    "follow_up_candidates_count",
+    "follow_up_ranked",
+    "follow_up_ranked_count",
 )
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent

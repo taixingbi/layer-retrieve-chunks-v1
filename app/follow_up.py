@@ -30,6 +30,11 @@ def _preview_for_log(text: str, *, max_chars: int = 400) -> str:
     return s
 
 
+def _sanitize_for_log(text: str) -> str:
+    """Single-line safe form (newlines escaped) for stderr JSON; no truncation."""
+    return text.replace("\r\n", "\n").replace("\r", "\n").replace("\n", "\\n")
+
+
 def _context_summary_for_followups(chunks: list[dict], *, max_chars: int = 3500) -> str:
     """Compact lines (source + truncated text) for follow-up generation prompts."""
     lines: list[str] = []
@@ -152,9 +157,10 @@ async def _generate_follow_up_candidates(
     request_id: str,
     session_id: str,
     trace_id: str | None = None,
-) -> list[str]:
-    """One chat call: returns ``{"follow_up_questions": [...]}`` containing
-    between ``min_count`` and ``max_count`` question strings."""
+) -> tuple[list[str], str]:
+    """One chat call: returns ``(candidates, raw)`` where ``candidates`` is the parsed
+    ``{"follow_up_questions": [...]}`` list (between ``min_count`` and ``max_count``
+    distinct strings) and ``raw`` is the unparsed assistant content (for logging)."""
     sys = (
         "Return ONLY one valid JSON object with a single key "
         '"follow_up_questions" whose value is an array of strings. '
@@ -192,7 +198,7 @@ async def _generate_follow_up_candidates(
             preview,
             extra={"follow_up_empty_reason": empty_reason},
         )
-    return candidates
+    return candidates, raw
 
 
 async def _rerank_follow_up_strings(
@@ -275,7 +281,7 @@ async def generate_follow_ups(
     gen_budget = min(_FOLLOW_UP_GEN_MAX_TOKENS_CAP, max(256, max_tokens_main))
     gen_t0 = time.perf_counter()
     try:
-        candidates = await _generate_follow_up_candidates(
+        candidates, raw = await _generate_follow_up_candidates(
             question=question,
             answer=answer,
             context_summary=summary,
@@ -309,4 +315,21 @@ async def generate_follow_ups(
         session_id=session_id,
         trace_id=trace_id,
     )
-    return ranked, gen_ms, _elapsed_ms(rr_t0)
+    rr_ms = _elapsed_ms(rr_t0)
+    if ranked:
+        logger.info(
+            "follow_up_questions_ok cand=%s ranked=%s reply_chars=%s",
+            len(candidates),
+            len(ranked),
+            len(raw),
+            extra={
+                "follow_up_raw_reply": _sanitize_for_log(raw),
+                "follow_up_candidates_full": list(candidates),
+                "follow_up_candidates_count": len(candidates),
+                "follow_up_ranked": list(ranked),
+                "follow_up_ranked_count": len(ranked),
+                "latency_follow_up_chat_ms": gen_ms,
+                "latency_follow_up_rerank_ms": rr_ms,
+            },
+        )
+    return ranked, gen_ms, rr_ms

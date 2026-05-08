@@ -38,6 +38,21 @@ The final `complete_rag_answer done` log line repeats these as top-level JSON fi
 
 Token budget for the generator: `min(512, max(256, max_tokens))` where `max_tokens` is the same cap used for the main RAG chat for that request.
 
+### Success log line
+
+When generation produces at least one ranked question, `generate_follow_ups` emits a single **INFO** line `follow_up_questions_ok cand=<N> ranked=<M> reply_chars=<C>` carrying the full input/output as top-level JSON fields (one extra line per RAG request):
+
+| Field | Type | Meaning |
+|--------|------|---------|
+| `follow_up_raw_reply` | string | Full assistant `content` from the generator chat call (newlines escaped, **not truncated**). |
+| `follow_up_candidates_full` | array of strings | All parsed/de-duped candidate questions before rerank. |
+| `follow_up_candidates_count` | integer | `len(follow_up_candidates_full)`. |
+| `follow_up_ranked` | array of strings | Final questions returned to the client (rerank top-`follow_up_final`). |
+| `follow_up_ranked_count` | integer | `len(follow_up_ranked)`. |
+| `latency_follow_up_chat_ms` / `latency_follow_up_rerank_ms` | integer | Same milliseconds reported in the `latency_ms` block. |
+
+Empty / failure paths emit `follow_up_questions_empty` instead (see "Fallbacks"); the two events are mutually exclusive per request.
+
 ## HTTP request body (optional fields)
 
 | Field | Default | Constraints |
