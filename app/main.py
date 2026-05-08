@@ -7,6 +7,7 @@ Run: ``python -m app.main`` or ``fastmcp run app/main.py:mcp``
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from typing import Any
@@ -319,6 +320,17 @@ async def answer_from_inference_http(request: Request) -> JSONResponse:
                     ):
                         ev_name = ev.pop("type")
                         yield _sse_event(ev_name, ev)
+                except asyncio.CancelledError:
+                    # Client closed the connection (Pause / abort / tab close). Don't
+                    # try to emit `error` / `done` — the socket is already gone — but
+                    # do log a structured WARNING and re-raise so the upstream
+                    # ``chat_complete_stream`` cancellation chain runs to completion
+                    # (closes httpx stream → TCP RST to vLLM → frees GPU slot).
+                    logger.warning(
+                        "rag_query stream cancelled by client",
+                        extra={"reason": "client_cancelled"},
+                    )
+                    raise
                 except ValueError as e:
                     yield _sse_event("error", {"detail": str(e)})
                     yield _sse_event("done", {})

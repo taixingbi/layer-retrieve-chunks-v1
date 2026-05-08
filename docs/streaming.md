@@ -115,9 +115,86 @@ Clients should treat `error` as a turn-level failure (display the message, do no
 
 Errors detected **before** the stream starts (Pydantic body validation, forbidden-body-key 400, missing correlation headers) are returned as a normal `JSONResponse` with the appropriate 4xx status — the SSE stream is never opened.
 
-## Cancellation
+## Pause / cancel from the UI
 
-Closing the TCP connection mid-stream cancels the upstream chat completion: `httpx.AsyncClient.aiter_lines()` raises inside `chat_complete_stream`, which propagates up and lets vLLM cancel its in-flight generation (frees the GPU slot). No special client API is required — just close the response body.
+There is no protocol-level "pause" for an HTTP response — once a stream is in flight, the only way to stop the workflow from the client is to **close the connection**. That is also the right primitive to bind a UI **Pause / Stop** button to: closing the connection cancels the upstream chat completion (`httpx.AsyncClient.aiter_lines()` raises inside `chat_complete_stream`; the `async with client.stream(...)` context exits; the TCP connection to vLLM is torn down; vLLM frees the GPU slot). The cancellation propagates from the browser → Starlette task → `complete_rag_answer_stream` → `chat_complete_stream` automatically.
+
+What this means in practice:
+
+| Behavior | Yes / no |
+|----------|----------|
+| Aborting the `fetch` stops the workflow end-to-end | **Yes** (best-effort upstream cancel; usually within one tick after the next read) |
+| Server emits `event: done` after the client aborts | **No** — the socket is already gone. The stream just ends. |
+| Server emits `event: error` after the client aborts | **No.** Cancellation is not an error; it's a normal client-driven outcome. |
+| Resume a paused generation later on a new connection | **No.** Cancel + new request is the only path. |
+
+### Browser: prefer `fetch` + `AbortController`
+
+`EventSource` cannot be aborted cleanly **and** cannot send custom headers (no `X-Request-Id` / auth). Use `fetch()` plus a manual SSE parser (or [`@microsoft/fetch-event-source`](https://www.npmjs.com/package/@microsoft/fetch-event-source)) so the **Pause** button can call `controller.abort()`:
+
+```js
+const controller = new AbortController();
+
+// "Pause" button handler:
+//   pauseBtn.onclick = () => controller.abort();
+
+const res = await fetch("/v1/rag/query?stream=1", {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    "Accept": "text/event-stream",
+    "X-Request-Id": correlationId,
+    "X-Session-Id": sessionId,
+  },
+  body: JSON.stringify({ question, collection_base, k: 5, k_max: 50 }),
+  signal: controller.signal,
+});
+
+const reader = res.body.getReader();
+const decoder = new TextDecoder();
+try {
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    parseSSE(decoder.decode(value, { stream: true })); // your line buffer + dispatcher
+  }
+} catch (e) {
+  if (e.name === "AbortError") {
+    // User pressed Pause. UI should show the partial answer + a "Resume" affordance
+    // that issues a NEW request (there is no resume of an aborted stream).
+  } else {
+    throw e;
+  }
+}
+```
+
+UI guidance:
+
+- Treat `AbortError` as a **normal terminal state**. Don't show an error toast.
+- Keep whatever `answer_delta` text accumulated; the model already paid for those tokens server-side and the partial answer is usually still useful.
+- "Resume" should issue a **new** request (optionally with a fresh `X-Request-Id` so logs split cleanly).
+
+### Python / `httpx`
+
+Same pattern — close the `client.stream` context (or `await stream.aclose()`):
+
+```python
+async with httpx.AsyncClient(timeout=None) as c:
+    async with c.stream("POST", url, json=body, headers=headers) as r:
+        async for line in r.aiter_lines():
+            if user_pressed_pause:
+                break  # exits the `async with`, sends FIN to the server
+            ...
+```
+
+### Observability
+
+When the client disconnects mid-stream, the server emits two structured WARNING lines:
+
+- `chat_complete_stream cancelled url=… model=… reply_chars=… ttft_ms=… gen_ms=…` — from the upstream chat call. `gen_ms` is the wall time spent generating before cancel (use this to measure how much GPU work the client paid for before pausing). Carries `reason=client_cancelled`, `ttft_ms`, `gen_ms` as structured fields.
+- `rag_query stream cancelled by client` — from the route handler. Carries `reason=client_cancelled`.
+
+These are the marker pair used to distinguish "user pressed Pause" from "request crashed" in dashboards. Cancellation is **not** counted as an error.
 
 ## Proxy / ingress notes
 

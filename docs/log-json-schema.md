@@ -47,7 +47,7 @@ Defined allowlist in code (`_EXTRA_JSON_FIELDS`):
 - `latency_total_ms`, `latency_embed_ms`, `latency_retrieve_ms`, `latency_chunk_rerank_ms`, `latency_chat_ms`, `latency_follow_up_chat_ms`, `latency_follow_up_rerank_ms`
 - `backend`
 - `gpu`
-- `reason`
+- `reason` — short machine-readable code (e.g. `client_cancelled` on `chat_complete_stream cancelled` / `rag_query stream cancelled by client` lines emitted when the SSE client aborts; see [`streaming.md`](streaming.md#observability)).
 - `upstream_status`
 - `error_type`
 - `error_message`
