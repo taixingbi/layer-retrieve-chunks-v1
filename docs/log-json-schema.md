@@ -52,6 +52,7 @@ Defined allowlist in code (`_EXTRA_JSON_FIELDS`):
 - `error_type`
 - `error_message`
 - `missing`
+- `follow_up_empty_reason` (stable code when `follow_up_questions` resolves to `[]`; see `docs/follow-up-questions.md`)
 
 To add new structured fields for dashboards or alerts, extend that tuple in `logging_config.py` and pass them through `extra=`.
 

@@ -1,6 +1,6 @@
 # Follow-up questions (RAG response)
 
-After the main RAG answer and citations are produced, the pipeline can attach **`follow_up_questions`**: short suggested questions for the user to ask next. Implementation lives in [`app/rag_answer.py`](../app/rag_answer.py); HTTP/MCP wiring is in [`app/main.py`](../app/main.py).
+After the main RAG answer and citations are produced, the pipeline can attach **`follow_up_questions`**: short suggested questions for the user to ask next. Implementation lives in [`app/follow_up.py`](../app/follow_up.py) (entry point: `generate_follow_ups`), invoked from [`app/rag_answer.py`](../app/rag_answer.py); HTTP/MCP wiring is in [`app/main.py`](../app/main.py).
 
 ## Response shape
 
@@ -59,9 +59,12 @@ Printed JSON includes `follow_up_questions` and `latency_ms`.
 
 ## Fallbacks
 
-- **JSON parse failure** after generation → `follow_up_questions: []` (warning logged).
-- **Rerank HTTP / transport error** → first `follow_up_final` candidates in **generation order** (warning logged).
-- **Generation exception** → `[]`.
+- **JSON parse failure** after generation → `follow_up_questions: []` (log line `follow_up_questions_empty` with `follow_up_empty_reason` in JSON, e.g. `json_invalid_bracket_slice_failed`, `parsed_not_list:dict`, `parsed_list_no_non_empty_strings`).
+- **Empty model reply** (whitespace-only assistant `content`) → `[]` (same log line with `follow_up_empty_reason=empty_model_reply` at INFO).
+- **No chunks** passed into follow-up generation → `[]` (`follow_up_empty_reason=no_chunks_used`).
+- **Rerank HTTP / transport error** → first `follow_up_final` candidates in **generation order** (warning `follow_up rerank failed`; response is **not** empty unless generation already failed).
+- **Generation exception** (HTTP error, bad response shape, etc.) → `[]` (`follow_up_empty_reason=generation_failed` plus `error_message`).
+- **Client disabled follow-ups** (`include_follow_up_questions: false`) → `[]` (`follow_up_empty_reason=follow_ups_disabled_by_request`).
 
 ## Cost and latency
 

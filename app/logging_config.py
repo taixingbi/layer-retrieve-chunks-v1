@@ -39,6 +39,7 @@ _EXTRA_JSON_FIELDS = (
     "error_type",
     "error_message",
     "missing",
+    "follow_up_empty_reason",
 )
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent

@@ -1,0 +1,262 @@
+"""Follow-up question generation: extra LLM call + reranker over candidate strings.
+
+Public surface: ``generate_follow_ups`` — invoked by ``app.rag_answer.complete_rag_answer``
+after the main RAG answer is produced. All failures are logged and degrade to ``[]`` so
+the primary RAG response shape stays stable.
+"""
+from __future__ import annotations
+
+import json
+import logging
+import time
+
+from app.http.inference import chat_complete
+from app.http.rerank import rerank_texts
+from app.logging_config import logger
+
+_FOLLOW_UP_GEN_MAX_TOKENS_CAP = 512
+
+
+def _elapsed_ms(since: float) -> int:
+    """Wall time in milliseconds from ``time.perf_counter()`` mark ``since``."""
+    return int(round((time.perf_counter() - since) * 1000))
+
+
+def _preview_for_log(text: str, *, max_chars: int = 400) -> str:
+    """One-line safe truncation for stderr JSON (newlines escaped)."""
+    s = text.replace("\r\n", "\n").replace("\r", "\n").replace("\n", "\\n")
+    if len(s) > max_chars:
+        return s[:max_chars] + "…"
+    return s
+
+
+def _context_summary_for_followups(chunks: list[dict], *, max_chars: int = 3500) -> str:
+    """Compact lines (source + truncated text) for follow-up generation prompts."""
+    lines: list[str] = []
+    size = 0
+    for c in chunks:
+        src = (c.get("source") or "").strip() or "(unknown)"
+        text = (c.get("text") or "").strip().replace("\n", " ")
+        if len(text) > 220:
+            text = text[:220] + "…"
+        line = f"- {src}: {text}"
+        if size + len(line) + 1 > max_chars:
+            break
+        lines.append(line)
+        size += len(line) + 1
+    return "\n".join(lines) if lines else "(no context)"
+
+
+def _parse_follow_up_json(raw: str) -> tuple[list[str], str | None]:
+    """
+    Parse model output into a list of non-empty question strings.
+
+    When the returned list is empty, the second element is a stable machine reason
+    for logging (``None`` when the list is non-empty).
+    """
+    text = raw.strip()
+    if not text:
+        return [], "empty_model_reply"
+    if "```" in text:
+        low = text.lower()
+        if "```json" in low:
+            start = low.find("```json") + 7
+            end = text.find("```", start)
+            if end != -1:
+                text = text[start:end].strip()
+        else:
+            start = text.find("```") + 3
+            end = text.find("```", start)
+            if end != -1:
+                text = text[start:end].strip()
+    if not text.strip():
+        return [], "empty_after_code_fence_strip"
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        i0 = text.find("[")
+        i1 = text.rfind("]")
+        if i0 == -1 or i1 <= i0:
+            return [], "json_invalid_no_array_slice"
+        try:
+            data = json.loads(text[i0 : i1 + 1])
+        except json.JSONDecodeError:
+            return [], "json_invalid_bracket_slice_failed"
+    if not isinstance(data, list):
+        return [], f"parsed_not_list:{type(data).__name__}"
+    out: list[str] = []
+    for x in data:
+        if isinstance(x, str) and (s := x.strip()):
+            out.append(s)
+    if not out:
+        return [], "parsed_list_no_non_empty_strings"
+    return out, None
+
+
+async def _generate_follow_up_candidates(
+    *,
+    question: str,
+    answer: str,
+    context_summary: str,
+    infer_base: str,
+    model: str,
+    min_count: int,
+    max_count: int,
+    max_tokens: int,
+    request_id: str,
+    session_id: str,
+    trace_id: str | None = None,
+) -> list[str]:
+    """One chat call: JSON array of between ``min_count`` and ``max_count`` question strings."""
+    sys = (
+        "You write only valid JSON: a single array of strings. No markdown, no keys, no commentary. "
+        f"Each string is one short follow-up question (under 120 characters). "
+        f"Produce between {min_count} and {max_count} distinct questions. "
+        "Questions must be answerable from the same knowledge domain as the context summary; "
+        "they may extend or refine the user's topic. Do not repeat the original question verbatim."
+    )
+    user = (
+        f"Original question:\n{question}\n\n"
+        f"Answer that was given:\n{answer}\n\n"
+        f"Context summary (retrieved passages):\n{context_summary}\n\n"
+        f"Output a JSON array of {min_count} to {max_count} follow-up questions."
+    )
+    raw = await chat_complete(
+        base_url=infer_base,
+        model=model,
+        messages=[{"role": "system", "content": sys}, {"role": "user", "content": user}],
+        max_tokens=max_tokens,
+        request_id=request_id,
+        session_id=session_id,
+        trace_id=trace_id,
+    )
+    candidates, empty_reason = _parse_follow_up_json(raw)
+    if not candidates:
+        preview = _preview_for_log(raw) if raw.strip() else "-"
+        lvl = logging.WARNING if empty_reason != "empty_model_reply" else logging.INFO
+        logger.log(
+            lvl,
+            "follow_up_questions_empty reason=%s reply_chars=%s raw_preview=%s",
+            empty_reason,
+            len(raw),
+            preview,
+            extra={"follow_up_empty_reason": empty_reason},
+        )
+    return candidates
+
+
+async def _rerank_follow_up_strings(
+    *,
+    question: str,
+    candidates: list[str],
+    rerank_url: str,
+    rerank_model: str,
+    top_n: int,
+    request_id: str,
+    session_id: str,
+    trace_id: str | None = None,
+) -> list[str]:
+    """Rerank candidate questions; return top ``top_n`` strings in score order."""
+    if not candidates:
+        return []
+    n = min(top_n, len(candidates))
+    try:
+        rows = await rerank_texts(
+            base_url=rerank_url,
+            model=rerank_model,
+            query=question,
+            documents=candidates,
+            top_n=n,
+            request_id=request_id,
+            session_id=session_id,
+            trace_id=trace_id,
+        )
+    except Exception as e:
+        logger.warning("follow_up rerank failed reason=%s", str(e))
+        return candidates[:n]
+    out: list[str] = []
+    seen: set[int] = set()
+    for row in rows:
+        idx = row.get("index", -1)
+        if not isinstance(idx, int) or idx < 0 or idx >= len(candidates) or idx in seen:
+            continue
+        seen.add(idx)
+        out.append(candidates[idx])
+        if len(out) >= n:
+            break
+    if len(out) < n:
+        for i, s in enumerate(candidates):
+            if i in seen:
+                continue
+            out.append(s)
+            if len(out) >= n:
+                break
+    return out if out else candidates[:n]
+
+
+async def generate_follow_ups(
+    *,
+    question: str,
+    answer: str,
+    chunks_used: list[dict],
+    follow_up_candidates: int,
+    follow_up_final: int,
+    infer_base: str,
+    model: str,
+    max_tokens_main: int,
+    rerank_url: str,
+    rerank_model: str,
+    request_id: str,
+    session_id: str,
+    trace_id: str | None = None,
+) -> tuple[list[str], int, int]:
+    """Returns ``(questions, chat_ms, rerank_ms)``; times are zero when skipped or on failure."""
+    if not chunks_used:
+        logger.info(
+            "follow_up_questions_empty reason=no_chunks_used",
+            extra={"follow_up_empty_reason": "no_chunks_used"},
+        )
+        return [], 0, 0
+    min_gen = max(3, follow_up_candidates - 3)
+    max_gen = follow_up_candidates
+    if min_gen > max_gen:
+        min_gen = max_gen
+    summary = _context_summary_for_followups(chunks_used)
+    gen_budget = min(_FOLLOW_UP_GEN_MAX_TOKENS_CAP, max(256, max_tokens_main))
+    gen_t0 = time.perf_counter()
+    try:
+        candidates = await _generate_follow_up_candidates(
+            question=question,
+            answer=answer,
+            context_summary=summary,
+            infer_base=infer_base,
+            model=model,
+            min_count=min_gen,
+            max_count=max_gen,
+            max_tokens=gen_budget,
+            request_id=request_id,
+            session_id=session_id,
+            trace_id=trace_id,
+        )
+    except Exception as e:
+        logger.warning(
+            "follow_up_questions_empty reason=generation_failed detail=%s",
+            str(e),
+            extra={"follow_up_empty_reason": "generation_failed", "error_message": str(e)},
+        )
+        return [], _elapsed_ms(gen_t0), 0
+    gen_ms = _elapsed_ms(gen_t0)
+    if not candidates:
+        return [], gen_ms, 0
+    rr_t0 = time.perf_counter()
+    ranked = await _rerank_follow_up_strings(
+        question=question,
+        candidates=candidates,
+        rerank_url=rerank_url,
+        rerank_model=rerank_model,
+        top_n=follow_up_final,
+        request_id=request_id,
+        session_id=session_id,
+        trace_id=trace_id,
+    )
+    return ranked, gen_ms, _elapsed_ms(rr_t0)
