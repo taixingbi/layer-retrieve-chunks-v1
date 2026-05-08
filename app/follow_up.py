@@ -166,9 +166,14 @@ async def _generate_follow_up_candidates(
         '"follow_up_questions" whose value is an array of strings. '
         "No markdown, no commentary, no extra keys, no multiple objects. "
         f"Produce between {min_count} and {max_count} distinct questions, "
-        "each under 120 characters. Questions must be answerable from the "
-        "same knowledge domain as the context summary and may extend or "
-        "refine the user's topic. Do not repeat the original question verbatim."
+        "each under 120 characters. The user just received the answer below "
+        "for their question; generate questions that DRILL DOWN into the same "
+        "specific sub-topic as the answer (clarifications, edge cases, next "
+        "logical steps, related sub-aspects). Stay tightly on the topic the "
+        "user actually asked about. Do NOT pivot to other facts that appear "
+        "only in the context summary but were not part of the answer. Each "
+        "question must be answerable from the same retrieved passages. "
+        "Do not repeat the original question verbatim."
     )
     user = (
         f"Original question:\n{question}\n\n"
@@ -204,6 +209,7 @@ async def _generate_follow_up_candidates(
 async def _rerank_follow_up_strings(
     *,
     question: str,
+    answer: str,
     candidates: list[str],
     rerank_url: str,
     rerank_model: str,
@@ -212,15 +218,20 @@ async def _rerank_follow_up_strings(
     session_id: str,
     trace_id: str | None = None,
 ) -> list[str]:
-    """Rerank candidate questions; return top ``top_n`` strings in score order."""
+    """Rerank candidate questions; return top ``top_n`` strings in score order.
+
+    The reranker query concatenates ``question`` + ``answer`` so the cross-encoder
+    has the full semantic target (terms from the answer body are usually what
+    distinguishes drill-downs from off-topic candidates)."""
     if not candidates:
         return []
     n = min(top_n, len(candidates))
+    rerank_query = f"{question}\n\n{answer}".strip() if answer else question
     try:
         rows = await rerank_texts(
             base_url=rerank_url,
             model=rerank_model,
-            query=question,
+            query=rerank_query,
             documents=candidates,
             top_n=n,
             request_id=request_id,
@@ -307,6 +318,7 @@ async def generate_follow_ups(
     rr_t0 = time.perf_counter()
     ranked = await _rerank_follow_up_strings(
         question=question,
+        answer=answer,
         candidates=candidates,
         rerank_url=rerank_url,
         rerank_model=rerank_model,

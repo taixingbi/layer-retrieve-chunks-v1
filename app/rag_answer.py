@@ -446,10 +446,14 @@ async def complete_rag_answer(
         follow_up_chat_ms = 0
         follow_up_rerank_ms = 0
         if include_follow_up_questions:
+            cited_ids = {c.get("chunk_id") for c in citations_out if c.get("chunk_id")}
+            chunks_for_generator = [
+                c for c in chunks_for_followups if c.get("chunk_id") in cited_ids
+            ] or chunks_for_followups[:1]
             follow_ups, follow_up_chat_ms, follow_up_rerank_ms = await generate_follow_ups(
                 question=question,
                 answer=answer_out,
-                chunks_used=chunks_for_followups,
+                chunks_used=chunks_for_generator,
                 follow_up_candidates=follow_up_candidates,
                 follow_up_final=follow_up_final,
                 infer_base=infer_base,
