@@ -161,7 +161,7 @@ curl -N -sS -X POST http://127.0.0.1:8000/v1/rag/query \
   }'
 ```
 
-Either request expects a `meta` event, several `answer_delta` events, then `answer_end`, `citations`, `follow_up_questions`, several `latency` events, and finally `done`. `-N` disables curl's own output buffering — without it the deltas batch on stdout.
+Either request expects `meta`, retrieval `latency` phases, `answer_start`, several `answer_delta` frames (final answer only; widen retries do not stream `NOT_FOUND`), `answer_end`, `citations`, `follow_up_questions`, remaining `latency` events including `total`, and `done`. If the model triggers a context widen, you will also see one or more `retrieval_widen` events before `answer_start`. `-N` disables curl's own output buffering — without it the deltas batch on stdout.
 
 ## RAG query — error cases
 

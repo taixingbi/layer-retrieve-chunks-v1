@@ -46,9 +46,10 @@ The HTTP status is locked at **200** as soon as headers flush. Errors that occur
 |-------|---------|------|
 | `meta` | `{"request_id","session_id","trace_id","collection","k","k_max"}` | First frame, before any work. |
 | `latency` | `{"phase","ms"}` | Once per phase: `embed`, `retrieve`, `chunk_rerank`, `chat`, `follow_up_chat`, `follow_up_rerank`, `total`. |
-| `answer_delta` | `{"text":"<token chunk>"}` | Streamed from the upstream chat completion as vLLM yields. May be empty between attempts on the widen path. |
-| `answer_clear` | `{"reason":"widen","prev_k":N,"next_k":M}` | The previous attempt returned `NOT_FOUND` / empty and we widened the slice. **Clients must discard every `answer_delta` they buffered for the current turn.** |
-| `answer_end` | `{}` | After the final chat attempt finishes (no further `answer_delta` for this turn). |
+| `retrieval_widen` | `{"reason","prev_k","next_k"}` | Emitted **before** a retry when the model returned empty or exactly `NOT_FOUND` and we widen the context slice (`expand_on_not_found`). `reason` is currently always `"not_found"`. Not sent when the first chat attempt already succeeds. |
+| `answer_start` | `{}` | Immediately before the first user-visible `answer_delta` for this turn. After any `retrieval_widen` events; clients can reset their answer buffer here. |
+| `answer_delta` | `{"text":"<chunk>"}` | Only the **final** answer text, chunked (~48 UTF-8 characters per frame) for smooth rendering. Intermediate NOT_FOUND / widen attempts are **not** streamed. |
+| `answer_end` | `{}` | After the last `answer_delta` for this turn. |
 | `citations` | `{"items":[{cite_id,chunk_id,source,text}, …]}` | After the final answer is assembled and citations are extracted. |
 | `follow_up_questions` | `{"items":["…"]}` | After follow-up generation completes. Empty list when disabled or empty. |
 | `retrieval_hits` | `{"items":[…]}` | Only when the request asked for hits (`include_retrieval_hits`, `debug`, `trace_retrieval`, or `return_retrieval_hits`). |
@@ -62,6 +63,7 @@ meta
 latency(phase=embed)
 latency(phase=retrieve)
 latency(phase=chunk_rerank)
+answer_start
 answer_delta × N
 answer_end
 latency(phase=chat)
@@ -76,14 +78,16 @@ done
 
 ### Order on the widen path (NOT_FOUND retry)
 
+Intermediate chat completions are **buffered** (no `answer_delta`). Each widen emits `retrieval_widen`, then after the final successful completion:
+
 ```
 meta
 latency(embed) latency(retrieve) latency(chunk_rerank)
-answer_delta × N             ← attempt 1 (NOT_FOUND)
-answer_clear(reason=widen, prev_k=K, next_k=K')
-answer_delta × M             ← attempt 2
+retrieval_widen × W          ← W = number of widen steps before success (or give up)
+answer_start
+answer_delta × N             ← final answer only
 answer_end
-latency(chat)                ← cumulative across attempts
+latency(chat)                ← cumulative wall time across all chat attempts
 citations
 follow_up_questions
 …
@@ -91,6 +95,8 @@ done
 ```
 
 Latency events for `chat` carry the **cumulative** wall time across all attempts, matching the non-stream `latency_ms.chat` field.
+
+`latency(phase=total)` is **wall-clock** time from the start of the stream handler (right after `meta`) through follow-ups. Phase lines (`embed`, `retrieve`, `chunk_rerank`, `chat`, `follow_up_chat`, `follow_up_rerank`) are measured sequentially along the pipeline; `chat` is the sum of every upstream completion in the widen loop plus the final one. Example: `total` ≈ 3.3s with `chat` ≈ 0.9s and `follow_up_chat` ≈ 2.0s is normal when follow-up generation dominates after the main answer.
 
 ## Error semantics
 
@@ -149,7 +155,7 @@ curl -N -sS -X POST 'http://127.0.0.1:8000/v1/rag/query' \
   -d '{"question":"what is taixing visa","collection_base":"taixing_knowledge","k":5,"k_max":50,"stream":true}'
 ```
 
-`-N` disables curl's own output buffering. Both forms expect `event: meta`, several `event: answer_delta` frames, `event: answer_end`, `event: citations`, `event: follow_up_questions`, several `event: latency` frames, and finally `event: done`.
+`-N` disables curl's own output buffering. Both forms expect `event: meta`, three `latency` frames for the retrieval pipeline, `event: answer_start`, several `event: answer_delta` frames, `event: answer_end`, more `latency` frames, `event: citations`, `event: follow_up_questions`, `event: latency` with `phase=total`, and finally `event: done`.
 
 ## Example: minimal Python client
 
@@ -182,10 +188,12 @@ async def stream(question: str) -> None:
                     event = line[7:]
                 elif line.startswith("data: "):
                     data = json.loads(line[6:])
-                    if event == "answer_delta":
+                    if event == "answer_start":
+                        pass  # optional: reset UI buffer
+                    elif event == "retrieval_widen":
+                        print(f"\n[widen: {data}]", flush=True)
+                    elif event == "answer_delta":
                         print(data["text"], end="", flush=True)
-                    elif event == "answer_clear":
-                        print(f"\n[reset: {data}]")
                     elif event == "done":
                         return
                     elif event == "error":
@@ -195,4 +203,4 @@ async def stream(question: str) -> None:
 
 ## Logging
 
-Each streamed request emits one extra structured log line: `chat_complete_stream ok url=… model=… reply_chars=… ttft_ms=… gen_ms=…` (replacing the non-stream `chat_complete ok` line for that attempt). `ttft_ms` and `gen_ms` are also exposed as top-level JSON keys for SLO dashboards. Everything else (`embed_text`, `query_chunks`, `rerank_texts`, `follow_up_questions_ok`, the `complete_rag_answer_stream done …` summary) is identical to the non-stream path.
+Each streamed request may emit multiple `chat_complete_stream ok …` lines — **one per upstream chat completion** (every widen attempt plus the final attempt). `ttft_ms` / `gen_ms` on each line refer to that attempt only. User-visible `answer_delta` frames are emitted **once** after all widen decisions, re-chunked from the final answer string (not raw per-token upstream frames on that leg). Everything else (`embed_text`, `query_chunks`, `rerank_texts`, `follow_up_questions_ok`, the `complete_rag_answer_stream done …` summary) matches the non-stream path.

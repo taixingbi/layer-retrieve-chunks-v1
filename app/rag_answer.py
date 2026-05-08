@@ -49,6 +49,10 @@ from app.request_context import bind_request_context
 
 _NOT_FOUND_REPLY = "NOT_FOUND"
 
+# Chunk size when re-streaming the final answer after widen attempts (user-visible deltas
+# only; intermediate NOT_FOUND attempts are buffered, not sent).
+_STREAM_ANSWER_VISUAL_CHUNK_CHARS = 48
+
 
 def _elapsed_ms(since: float) -> int:
     """Wall time in milliseconds from ``time.perf_counter()`` mark ``since``."""
@@ -627,14 +631,15 @@ async def complete_rag_answer_stream(
     a ``type`` key naming the SSE event) in this order on a happy path:
 
       ``meta`` → ``latency(embed)`` → ``latency(retrieve)`` → ``latency(chunk_rerank)`` →
-      many ``answer_delta`` → ``answer_end`` → ``latency(chat)`` → ``citations`` →
+      zero or more ``retrieval_widen`` → ``answer_start`` → many ``answer_delta`` →
+      ``answer_end`` → ``latency(chat)`` → ``citations`` →
       ``follow_up_questions`` → ``latency(follow_up_chat)`` → ``latency(follow_up_rerank)`` →
       ``latency(total)`` → ``done``
 
-    On the widen path (NOT_FOUND / empty answer triggering a retry at a wider ``k``), an
-    ``answer_clear`` event is yielded between the stale ``answer_delta`` stream and the
-    next attempt — clients must discard everything they buffered for the previous
-    attempt and start fresh.
+    Widen attempts (NOT_FOUND / empty with ``expand_on_not_found``) run chat upstream
+    but **do not** emit ``answer_delta``; each widen emits ``retrieval_widen`` only, then
+    the final answer is streamed after ``answer_start`` (chunked for UX; not raw
+    per-token upstream frames on that final leg).
 
     Validation errors raise ``ValueError`` BEFORE any event is yielded; the route
     handler maps that to a 4xx ``JSONResponse`` so the wire never starts an SSE stream
@@ -704,7 +709,6 @@ async def complete_rag_answer_stream(
                 trace_id=trace_id,
             ):
                 buf.append(delta)
-                yield {"type": "answer_delta", "text": delta}
             chat_ms_total += _elapsed_ms(t_chat)
             last_answer = "".join(buf)
 
@@ -733,13 +737,18 @@ async def complete_rag_answer_stream(
                 next_k,
             )
             yield {
-                "type": "answer_clear",
-                "reason": "widen",
+                "type": "retrieval_widen",
+                "reason": "not_found",
                 "prev_k": current_k,
                 "next_k": next_k,
             }
             current_k = next_k
 
+        yield {"type": "answer_start"}
+        text_out = last_answer
+        step = _STREAM_ANSWER_VISUAL_CHUNK_CHARS
+        for i in range(0, len(text_out), step):
+            yield {"type": "answer_delta", "text": text_out[i : i + step]}
         yield {"type": "answer_end"}
         yield {"type": "latency", "phase": "chat", "ms": chat_ms_total}
 
