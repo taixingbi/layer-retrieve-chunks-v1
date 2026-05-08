@@ -33,7 +33,7 @@ The final `complete_rag_answer done` log line repeats these as top-level JSON fi
 
 1. **Main RAG** (unchanged): retrieve → optional chunk rerank → chat → citations.
 2. **Context summary**: From the same chunk slice used for the final chat turn, build a compact bullet list (`source` + truncated text, ~3.5k chars max) via `_context_summary_for_followups`.
-3. **Generate candidates**: Second call to `INFERENCE_URL` / `v1/chat/completions` asks the model for **only** a JSON array of strings. Count bounds: `min_gen = max(3, follow_up_candidates - 3)` through `max_gen = follow_up_candidates` (defaults: 5–8 when `follow_up_candidates == 8`).
+3. **Generate candidates**: Second call to `INFERENCE_URL` / `v1/chat/completions` asks the model for **only** a JSON object of the shape `{"follow_up_questions": ["…", "…"]}`. Count bounds: `min_gen = max(3, follow_up_candidates - 3)` through `max_gen = follow_up_candidates` (defaults: 5–8 when `follow_up_candidates == 8`). The parser is tolerant: it also accepts a bare JSON array, dicts using the keys `questions` / `follow_ups`, code-fenced JSON, comma-separated arrays, and even concatenated top-level values like `["Q1"]["Q2"]["Q3"]` (a known vLLM glitch); duplicates are de-duplicated by string.
 4. **Rerank**: [`app/http/rerank.py`](../app/http/rerank.py) `rerank_texts` scores each candidate string against the **original user question** (`query` = `question`), returns all indices ordered by score, then the code keeps the first **`follow_up_final`** (default **3**).
 
 Token budget for the generator: `min(512, max(256, max_tokens))` where `max_tokens` is the same cap used for the main RAG chat for that request.

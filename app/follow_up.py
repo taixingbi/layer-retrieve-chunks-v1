@@ -47,12 +47,35 @@ def _context_summary_for_followups(chunks: list[dict], *, max_chars: int = 3500)
     return "\n".join(lines) if lines else "(no context)"
 
 
+_FOLLOW_UP_OBJECT_KEYS = ("follow_up_questions", "questions", "follow_ups")
+
+
+def _coerce_to_strings(value: object) -> list[str]:
+    """Pull question strings from supported shapes: list, or dict with one of the known keys."""
+    if isinstance(value, list):
+        return [x for x in value if isinstance(x, str)]
+    if isinstance(value, dict):
+        for key in _FOLLOW_UP_OBJECT_KEYS:
+            v = value.get(key)
+            if isinstance(v, list):
+                return [x for x in v if isinstance(x, str)]
+        for v in value.values():
+            if isinstance(v, list) and all(isinstance(x, str) for x in v):
+                return list(v)
+    return []
+
+
 def _parse_follow_up_json(raw: str) -> tuple[list[str], str | None]:
     """
     Parse model output into a list of non-empty question strings.
 
-    When the returned list is empty, the second element is a stable machine reason
-    for logging (``None`` when the list is non-empty).
+    Accepts the canonical shape ``{"follow_up_questions": ["…", "…"]}`` and
+    legacy bare arrays. Recovers from common LLM glitches: code fences,
+    concatenated top-level JSON values (``["Q1"]["Q2"]["Q3"]``), and
+    array-fragment slices.
+
+    When the returned list is empty, the second element is a stable machine
+    reason for logging (``None`` when the list is non-empty).
     """
     text = raw.strip()
     if not text:
@@ -71,24 +94,47 @@ def _parse_follow_up_json(raw: str) -> tuple[list[str], str | None]:
                 text = text[start:end].strip()
     if not text.strip():
         return [], "empty_after_code_fence_strip"
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError:
+
+    # Greedy scan: collect 1..N concatenated top-level JSON values, tolerating
+    # whitespace and stray commas between them. Handles ``["Q1"]["Q2"]["Q3"]``
+    # and ``{"follow_up_questions":[…]}``.
+    decoder = json.JSONDecoder()
+    values: list[object] = []
+    i = 0
+    n = len(text)
+    while i < n:
+        while i < n and text[i] in " \t\r\n,":
+            i += 1
+        if i >= n:
+            break
+        try:
+            value, end = decoder.raw_decode(text, i)
+        except json.JSONDecodeError:
+            break
+        values.append(value)
+        i = end
+
+    if not values:
         i0 = text.find("[")
         i1 = text.rfind("]")
         if i0 == -1 or i1 <= i0:
             return [], "json_invalid_no_array_slice"
         try:
-            data = json.loads(text[i0 : i1 + 1])
+            values = [json.loads(text[i0 : i1 + 1])]
         except json.JSONDecodeError:
             return [], "json_invalid_bracket_slice_failed"
-    if not isinstance(data, list):
-        return [], f"parsed_not_list:{type(data).__name__}"
+
     out: list[str] = []
-    for x in data:
-        if isinstance(x, str) and (s := x.strip()):
-            out.append(s)
+    seen: set[str] = set()
+    for value in values:
+        for s in _coerce_to_strings(value):
+            t = s.strip()
+            if t and t not in seen:
+                seen.add(t)
+                out.append(t)
     if not out:
+        if len(values) == 1 and not isinstance(values[0], (list, dict)):
+            return [], f"parsed_not_list:{type(values[0]).__name__}"
         return [], "parsed_list_no_non_empty_strings"
     return out, None
 
@@ -107,19 +153,23 @@ async def _generate_follow_up_candidates(
     session_id: str,
     trace_id: str | None = None,
 ) -> list[str]:
-    """One chat call: JSON array of between ``min_count`` and ``max_count`` question strings."""
+    """One chat call: returns ``{"follow_up_questions": [...]}`` containing
+    between ``min_count`` and ``max_count`` question strings."""
     sys = (
-        "You write only valid JSON: a single array of strings. No markdown, no keys, no commentary. "
-        f"Each string is one short follow-up question (under 120 characters). "
-        f"Produce between {min_count} and {max_count} distinct questions. "
-        "Questions must be answerable from the same knowledge domain as the context summary; "
-        "they may extend or refine the user's topic. Do not repeat the original question verbatim."
+        "Return ONLY one valid JSON object with a single key "
+        '"follow_up_questions" whose value is an array of strings. '
+        "No markdown, no commentary, no extra keys, no multiple objects. "
+        f"Produce between {min_count} and {max_count} distinct questions, "
+        "each under 120 characters. Questions must be answerable from the "
+        "same knowledge domain as the context summary and may extend or "
+        "refine the user's topic. Do not repeat the original question verbatim."
     )
     user = (
         f"Original question:\n{question}\n\n"
         f"Answer that was given:\n{answer}\n\n"
         f"Context summary (retrieved passages):\n{context_summary}\n\n"
-        f"Output a JSON array of {min_count} to {max_count} follow-up questions."
+        f'Return EXACTLY this shape with {min_count}-{max_count} entries:\n'
+        '{"follow_up_questions": ["question 1", "question 2", "question 3"]}'
     )
     raw = await chat_complete(
         base_url=infer_base,
