@@ -19,7 +19,6 @@ __pycache__
 dist
 *.egg-info
 *.egg
-uv.lock
 
 # Project noise / large paths not needed in the image
 tmp.md

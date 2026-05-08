@@ -45,6 +45,8 @@ _EXTRA_JSON_FIELDS = (
     "follow_up_candidates_count",
     "follow_up_ranked",
     "follow_up_ranked_count",
+    "ttft_ms",
+    "gen_ms",
 )
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent

@@ -7,6 +7,7 @@ Run: ``python -m app.main`` or ``fastmcp run app/main.py:mcp``
 """
 from __future__ import annotations
 
+import json
 import uuid
 from typing import Any
 
@@ -14,13 +15,13 @@ import httpx
 from fastmcp import FastMCP
 from pydantic import BaseModel, Field, ValidationError, model_validator
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, StreamingResponse
 
 from app.asyncio_util import run_async
 from app.http.embed import embed_text as _embed_text_async
 from app.logging_config import logger
 from app.qdrant.client import create_async_client, resolve_connection_params
-from app.rag_answer import complete_rag_answer
+from app.rag_answer import complete_rag_answer, complete_rag_answer_stream
 from app.request_context import bind_http_context
 from app.retrieval import query_chunks as _query_chunks_async
 
@@ -34,6 +35,22 @@ def _correlation_from_headers(request: Request) -> tuple[str, str, str | None]:
     tid_raw = (request.headers.get("x-trace-id") or "").strip()
     tid: str | None = tid_raw if tid_raw else None
     return rid, sid, tid
+
+
+def _wants_sse(request: Request) -> bool:
+    """``True`` when caller asked for SSE via ``?stream=1`` (also accepts ``true``/``yes``)
+    or an ``Accept: text/event-stream`` header."""
+    qp = (request.query_params.get("stream") or "").strip().lower()
+    if qp in {"1", "true", "yes"}:
+        return True
+    accept = (request.headers.get("accept") or "").lower()
+    return "text/event-stream" in accept
+
+
+def _sse_event(name: str, payload: dict[str, Any]) -> bytes:
+    """Encode a single SSE frame as ``event: <name>\\ndata: <json>\\n\\n`` (UTF-8)."""
+    body = json.dumps(payload, ensure_ascii=False)
+    return f"event: {name}\ndata: {body}\n\n".encode("utf-8")
 
 
 class AnswerFromInferenceBody(BaseModel):
@@ -55,6 +72,7 @@ class AnswerFromInferenceBody(BaseModel):
     debug: bool = False
     trace_retrieval: bool = False
     return_retrieval_hits: bool = False
+    stream: bool = False
 
     @model_validator(mode="after")
     def _follow_up_final_lte_candidates(self) -> AnswerFromInferenceBody:
@@ -237,6 +255,11 @@ async def answer_from_inference_http(request: Request) -> JSONResponse:
     Correlation: ``X-Request-Id``, ``X-Session-Id``, ``X-Trace-Id`` (optional). If request or
     session id headers are missing or blank, new UUIDs are generated for this call only.
     Do not send ``request_id``, ``session_id``, or ``trace_id`` in the JSON body (400).
+
+    Default behavior is single-shot ``application/json``. Streaming is opt-in via any
+    of: ``?stream=1`` query param, ``Accept: text/event-stream`` header, or
+    ``"stream": true`` in the JSON body. See ``docs/streaming.md`` for the event
+    sequence and error semantics.
     """
     method = request.method
     path = request.url.path
@@ -266,6 +289,70 @@ async def answer_from_inference_http(request: Request) -> JSONResponse:
         body = AnswerFromInferenceBody.model_validate(data)
     except ValidationError as e:
         return JSONResponse({"detail": e.errors()}, status_code=422)
+
+    if _wants_sse(request) or body.stream:
+        async def sse_iter():
+            """Yield SSE frames from ``complete_rag_answer_stream``. Once headers flushed
+            we're locked at HTTP 200, so any error is surfaced in-band as ``error`` +
+            ``done`` (per ``docs/streaming.md``)."""
+            with bind_http_context(method, path, status="200"):
+                try:
+                    async for ev in complete_rag_answer_stream(
+                        body.question,
+                        body.collection_base,
+                        request_id,
+                        session_id,
+                        k=body.k,
+                        k_max=body.k_max,
+                        max_tokens=body.max_tokens,
+                        expand_on_not_found=body.expand_on_not_found,
+                        rerank_top_n=body.rerank_top_n,
+                        rerank_return_top_k=body.rerank_return_top_k,
+                        retrieve_fallback_n=body.retrieve_fallback_n,
+                        final_context_top_k=body.final_context_top_k,
+                        use_reranker=body.use_reranker,
+                        include_follow_up_questions=body.include_follow_up_questions,
+                        follow_up_candidates=body.follow_up_candidates,
+                        follow_up_final=body.follow_up_final,
+                        include_retrieval_hits=body.wants_retrieval_hits(),
+                        trace_id=trace_id,
+                    ):
+                        ev_name = ev.pop("type")
+                        yield _sse_event(ev_name, ev)
+                except ValueError as e:
+                    yield _sse_event("error", {"detail": str(e)})
+                    yield _sse_event("done", {})
+                except httpx.HTTPStatusError as e:
+                    yield _sse_event(
+                        "error",
+                        {"detail": e.response.text or str(e)},
+                    )
+                    yield _sse_event("done", {})
+                except Exception as e:
+                    logger.exception(
+                        "complete_rag_answer_stream crashed",
+                        extra={"error_type": type(e).__name__, "error_message": str(e)},
+                    )
+                    yield _sse_event(
+                        "error",
+                        {"detail": f"{type(e).__name__}: {e}"},
+                    )
+                    yield _sse_event("done", {})
+
+        sse_headers: dict[str, str] = {
+            "X-Request-Id": request_id,
+            "X-Session-Id": session_id,
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        }
+        if trace_id:
+            sse_headers["X-Trace-Id"] = trace_id
+        return StreamingResponse(
+            sse_iter(),
+            media_type="text/event-stream",
+            headers=sse_headers,
+        )
+
     try:
         # method/path/status for stderr JSON lines (matches ASGI access log when happy path).
         with bind_http_context(method, path, status="200"):

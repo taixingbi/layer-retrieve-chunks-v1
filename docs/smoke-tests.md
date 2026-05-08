@@ -124,6 +124,45 @@ curl -sS -X POST http://127.0.0.1:8000/v1/rag/query \
   }'
 ```
 
+## RAG query — streaming (SSE)
+
+Opt in with **any** of: `?stream=1` query param, `Accept: text/event-stream` header, or `"stream": true` in the JSON body. Response is `text/event-stream` with `Cache-Control: no-cache` and `X-Accel-Buffering: no`. See [streaming.md](streaming.md) for the full event sequence and error semantics; behind nginx-ingress, also set `nginx.ingress.kubernetes.io/proxy-buffering: "off"` on the route.
+
+Query-param style (most explicit on the wire):
+
+```bash
+curl -N -sS -X POST 'http://127.0.0.1:8000/v1/rag/query?stream=1' \
+  -H "Content-Type: application/json" \
+  -H "Accept: text/event-stream" \
+  -H "X-Request-Id: req-stream-1" \
+  -H "X-Session-Id: ses-stream-1" \
+  -H "X-Trace-Id: trace-stream-1" \
+  -d '{
+    "question": "what is taixing visa",
+    "collection_base": "taixing_knowledge",
+    "k": 5,
+    "k_max": 50
+  }'
+```
+
+Body-flag style (handy when callers can't change the URL or `Accept` header):
+
+```bash
+curl -N -sS -X POST http://127.0.0.1:8000/v1/rag/query \
+  -H "Content-Type: application/json" \
+  -H "X-Request-Id: req-stream-2" \
+  -H "X-Session-Id: ses-stream-2" \
+  -d '{
+    "question": "what is taixing visa",
+    "collection_base": "taixing_knowledge",
+    "k": 5,
+    "k_max": 50,
+    "stream": true
+  }'
+```
+
+Either request expects a `meta` event, several `answer_delta` events, then `answer_end`, `citations`, `follow_up_questions`, several `latency` events, and finally `done`. `-N` disables curl's own output buffering — without it the deltas batch on stdout.
+
 ## RAG query — error cases
 
 ```bash
@@ -206,7 +245,8 @@ curl -sS "${QDRANT_URL}/collections/taixing_knowledge_${ENV}" \
 |---------|--------|-----|
 | Liveness | `GET` | `http://127.0.0.1:8000/health` |
 | Readiness (probes Qdrant) | `GET` | `http://127.0.0.1:8000/ready` |
-| RAG answer | `POST` | `http://127.0.0.1:8000/v1/rag/query` |
+| RAG answer (JSON) | `POST` | `http://127.0.0.1:8000/v1/rag/query` |
+| RAG answer (SSE) | `POST` | `http://127.0.0.1:8000/v1/rag/query?stream=1` |
 | MCP transport | (MCP) | `http://127.0.0.1:8000/mcp` |
 | Embedding (upstream) | `POST` | `${EMBEDDING_URL}/v1/embeddings` |
 | Chat (upstream) | `POST` | `${INFERENCE_URL}/v1/chat/completions` |

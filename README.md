@@ -181,6 +181,8 @@ curl -sS -X POST http://127.0.0.1:8000/v1/rag/query \
 
 **Optional `retrieval_hits` (eval / debug):** If any of these booleans is true, the response also includes `retrieval_hits`: `include_retrieval_hits`, `debug`, `trace_retrieval`, `return_retrieval_hits`. Each hit is a small object (no passage text): `stage` (`retrieve` = RRF order after hybrid fusion, `rerank` = cross-encoder order when reranking ran), `rank` (1-based within that stage), `chunk_id`, `source`, `score`. Scores are not comparable across stages (retrieve uses RRF; rerank uses the rerank API).
 
+**Streaming (SSE).** For chat-style UIs that want answer tokens as they arrive, opt in to streaming on `POST /v1/rag/query` via any of: `?stream=1` query param, `Accept: text/event-stream` header, or `"stream": true` in the JSON body. The response is `text/event-stream` with `meta` → per-phase `latency` → `answer_delta` (one frame per upstream chat token chunk) → `answer_end` → `citations` → `follow_up_questions` → `done`. Errors after the first frame surface in-band as `event: error` followed by `event: done`. Same correlation headers, same response headers (plus `Cache-Control: no-cache` and `X-Accel-Buffering: no`). The non-stream JSON behavior is unchanged. Full event reference and proxy / nginx-ingress notes: [`docs/streaming.md`](docs/streaming.md).
+
 ```bash
 curl -sS -X POST http://127.0.0.1:8000/v1/rag/query \
   -H "Content-Type: application/json" \
@@ -195,7 +197,7 @@ curl -sS -X POST http://127.0.0.1:8000/v1/rag/query \
   }'
 ```
 
-See also [`docs/smoke-tests.md`](docs/smoke-tests.md), [`docs/follow-up-questions.md`](docs/follow-up-questions.md), and [`docs/log-json-schema.md`](docs/log-json-schema.md).
+See also [`docs/streaming.md`](docs/streaming.md), [`docs/smoke-tests.md`](docs/smoke-tests.md), [`docs/follow-up-questions.md`](docs/follow-up-questions.md), and [`docs/log-json-schema.md`](docs/log-json-schema.md).
 
 **Cursor** (`.cursor/mcp.json` or global MCP settings): point the server at the repo root so `.env` resolves; use your venv’s `python` if needed:
 
