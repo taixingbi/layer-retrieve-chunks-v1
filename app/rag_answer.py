@@ -38,6 +38,7 @@ from app.config import (
 )
 from collections.abc import AsyncIterator
 
+from app.access import RagUser, compact_for_log
 from app.asyncio_util import run_async
 from app.follow_up import generate_follow_ups
 from app.http.embed import embed_text
@@ -264,6 +265,7 @@ async def _rag_prepare(
     follow_up_candidates: int,
     follow_up_final: int,
     trace_id: str | None = None,
+    user: RagUser | None = None,
 ) -> _RagPrep:
     """Resolve config defaults, validate args, embed the query, retrieve chunks, and
     optionally chunk-rerank. Caller must already be inside ``bind_request_context`` so
@@ -320,10 +322,11 @@ async def _rag_prepare(
         ),
     }
 
+    user_log = compact_for_log(user)
     logger.info(
         "complete_rag_answer start collection_base=%s k=%s k_max=%s rerank_top_n=%s "
         "rerank_return_top_k=%s retrieve_fallback_n=%s final_context_top_k=%s "
-        "use_reranker=%s follow_ups=%s cand=%s final=%s",
+        "use_reranker=%s follow_ups=%s cand=%s final=%s user=%s",
         collection_base,
         k,
         k_max,
@@ -335,6 +338,12 @@ async def _rag_prepare(
         include_follow_up_questions,
         follow_up_candidates,
         follow_up_final,
+        user_log,
+        extra={
+            "user_roles": list(user.roles) if user else [],
+            "user_groups": list(user.groups) if user else [],
+            "user_teams": list(user.teams) if user else [],
+        },
     )
 
     t_embed = time.perf_counter()
@@ -357,6 +366,7 @@ async def _rag_prepare(
         trace_id=trace_id,
         query_vector=query_vector,
         qdrant_limit_override=retrieve_pool,
+        user=user,
     )
     retrieve_ms = _elapsed_ms(t_ret)
     if not chunks_full:
@@ -447,6 +457,7 @@ async def complete_rag_answer(
     follow_up_final: int = 3,
     include_retrieval_hits: bool = False,
     trace_id: str | None = None,
+    user: RagUser | None = None,
 ) -> tuple[str, list[dict], list[str], dict[str, int], list[dict]]:
     """
     ``query_chunks`` → numbered context → ``POST .../v1/chat/completions``.
@@ -470,7 +481,12 @@ async def complete_rag_answer(
 
     Set ``expand_on_not_found=False`` for a single chat call at the initial ``k`` (typical for eval).
     """
-    with bind_request_context(request_id, session_id, trace_id=trace_id):
+    with bind_request_context(
+        request_id,
+        session_id,
+        trace_id=trace_id,
+        user_id=user.id if user else None,
+    ):
         wall_t0 = time.perf_counter()
         prep = await _rag_prepare(
             question,
@@ -489,6 +505,7 @@ async def complete_rag_answer(
             follow_up_candidates=follow_up_candidates,
             follow_up_final=follow_up_final,
             trace_id=trace_id,
+            user=user,
         )
 
         current_k = prep.initial_k
@@ -626,6 +643,7 @@ async def complete_rag_answer_stream(
     follow_up_final: int = 3,
     include_retrieval_hits: bool = False,
     trace_id: str | None = None,
+    user: RagUser | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """Streaming sibling of :func:`complete_rag_answer`. Yields event dicts (each carries
     a ``type`` key naming the SSE event) in this order on a happy path:
@@ -646,7 +664,12 @@ async def complete_rag_answer_stream(
     that's actually a 4xx error. After the first event is yielded the HTTP status is
     locked at 200 — any later upstream failure surfaces as in-band ``error`` + ``done``
     (handled in :mod:`app.main`)."""
-    with bind_request_context(request_id, session_id, trace_id=trace_id):
+    with bind_request_context(
+        request_id,
+        session_id,
+        trace_id=trace_id,
+        user_id=user.id if user else None,
+    ):
         wall_t0 = time.perf_counter()
         prep = await _rag_prepare(
             question,
@@ -665,6 +688,7 @@ async def complete_rag_answer_stream(
             follow_up_candidates=follow_up_candidates,
             follow_up_final=follow_up_final,
             trace_id=trace_id,
+            user=user,
         )
 
         yield {
@@ -672,6 +696,7 @@ async def complete_rag_answer_stream(
             "request_id": request_id,
             "session_id": session_id,
             "trace_id": trace_id,
+            "user_id": user.id if user else "-",
             "collection": collection_base,
             "k": k,
             "k_max": k_max,

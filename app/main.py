@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field, ValidationError, model_validator
 from starlette.requests import Request
 from starlette.responses import JSONResponse, StreamingResponse
 
+from app.access import RagUser
 from app.asyncio_util import run_async
 from app.http.embed import embed_text as _embed_text_async
 from app.logging_config import logger
@@ -26,7 +27,15 @@ from app.rag_answer import complete_rag_answer, complete_rag_answer_stream
 from app.request_context import bind_http_context
 from app.retrieval import query_chunks as _query_chunks_async
 
-_FORBIDDEN_RAG_BODY_KEYS = frozenset({"request_id", "session_id", "trace_id"})
+_FORBIDDEN_RAG_BODY_KEYS = frozenset({
+    "request_id",
+    "session_id",
+    "trace_id",
+    "user_id",
+    "user_roles",
+    "user_groups",
+    "user_teams",
+})
 
 
 def _correlation_from_headers(request: Request) -> tuple[str, str, str | None]:
@@ -39,11 +48,11 @@ def _correlation_from_headers(request: Request) -> tuple[str, str, str | None]:
 
 
 def _wants_sse(request: Request) -> bool:
-    """``True`` when caller asked for SSE via ``?stream=1`` (also accepts ``true``/``yes``)
-    or an ``Accept: text/event-stream`` header."""
-    qp = (request.query_params.get("stream") or "").strip().lower()
-    if qp in {"1", "true", "yes"}:
-        return True
+    """``True`` when caller asked for SSE via an ``Accept: text/event-stream`` header.
+
+    The other supported trigger is ``"stream": true`` in the JSON body, checked at the
+    route handler. Query-param triggers (``?stream=1`` etc.) are intentionally not
+    supported — keep streaming opt-in via header or body so URLs stay clean."""
     accept = (request.headers.get("accept") or "").lower()
     return "text/event-stream" in accept
 
@@ -118,6 +127,7 @@ async def answer_from_inference_payload_async(
     request_id: str,
     session_id: str,
     trace_id: str | None = None,
+    user: RagUser | None = None,
 ) -> dict[str, Any]:
     """Run RAG + chat (async). Raise ``ValueError`` or ``httpx.HTTPStatusError`` on failure."""
     if body.k_max < body.k:
@@ -142,6 +152,7 @@ async def answer_from_inference_payload_async(
         follow_up_final=body.follow_up_final,
         include_retrieval_hits=wants_hits,
         trace_id=trace_id,
+        user=user,
     )
     return _answer_payload(
         answer=answer,
@@ -257,9 +268,14 @@ async def answer_from_inference_http(request: Request) -> JSONResponse:
     session id headers are missing or blank, new UUIDs are generated for this call only.
     Do not send ``request_id``, ``session_id``, or ``trace_id`` in the JSON body (400).
 
-    Default behavior is single-shot ``application/json``. Streaming is opt-in via any
-    of: ``?stream=1`` query param, ``Accept: text/event-stream`` header, or
-    ``"stream": true`` in the JSON body. See ``docs/streaming.md`` for the event
+    Access control: ``X-User-Id`` / ``X-User-Roles`` / ``X-User-Groups`` / ``X-User-Teams``
+    (all optional). Roles default to ``["anyuser"]`` when absent so chunks tagged
+    ``access.roles=["anyuser"]`` are the public set. ``admin`` role bypasses filtering.
+    These four fields must NOT appear in the JSON body (400). See ``docs/access-control.md``.
+
+    Default behavior is single-shot ``application/json``. Streaming is opt-in via
+    either an ``Accept: text/event-stream`` request header or ``"stream": true`` in
+    the JSON body (the two are OR-ed). See ``docs/streaming.md`` for the event
     sequence and error semantics.
     """
     method = request.method
@@ -286,6 +302,7 @@ async def answer_from_inference_http(request: Request) -> JSONResponse:
         request_id = str(uuid.uuid4())
     if not session_id:
         session_id = str(uuid.uuid4())
+    user = RagUser.from_headers(request)
     try:
         body = AnswerFromInferenceBody.model_validate(data)
     except ValidationError as e:
@@ -317,6 +334,7 @@ async def answer_from_inference_http(request: Request) -> JSONResponse:
                         follow_up_final=body.follow_up_final,
                         include_retrieval_hits=body.wants_retrieval_hits(),
                         trace_id=trace_id,
+                        user=user,
                     ):
                         ev_name = ev.pop("type")
                         yield _sse_event(ev_name, ev)
@@ -354,6 +372,7 @@ async def answer_from_inference_http(request: Request) -> JSONResponse:
         sse_headers: dict[str, str] = {
             "X-Request-Id": request_id,
             "X-Session-Id": session_id,
+            "X-User-Id": user.id,
             "Cache-Control": "no-cache",
             "X-Accel-Buffering": "no",
         }
@@ -373,6 +392,7 @@ async def answer_from_inference_http(request: Request) -> JSONResponse:
                 request_id=request_id,
                 session_id=session_id,
                 trace_id=trace_id,
+                user=user,
             )
     except ValueError as e:
         return JSONResponse({"detail": str(e)}, status_code=400)
@@ -384,6 +404,7 @@ async def answer_from_inference_http(request: Request) -> JSONResponse:
     hdrs: dict[str, str] = {
         "X-Request-Id": request_id,
         "X-Session-Id": session_id,
+        "X-User-Id": user.id,
     }
     if trace_id:
         hdrs["X-Trace-Id"] = trace_id

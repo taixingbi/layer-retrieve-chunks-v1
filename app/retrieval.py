@@ -9,8 +9,10 @@ import re
 from collections.abc import Awaitable, Callable
 
 from qdrant_client import AsyncQdrantClient
+from qdrant_client.models import Filter
 from rank_bm25 import BM25Okapi
 
+from app.access import RagUser, build_qdrant_access_filter
 from app.config import (
     get_env,
     TOP_K_DENSE,
@@ -45,8 +47,13 @@ async def _search_dense(
     session_id: str,
     trace_id: str | None = None,
     query_vector: list[float] | None = None,
+    query_filter: Filter | None = None,
 ) -> list[dict]:
-    """Dense vector search via Qdrant. Pass ``query_vector`` to skip re-embedding the query."""
+    """Dense vector search via Qdrant. Pass ``query_vector`` to skip re-embedding the query.
+
+    ``query_filter`` is forwarded to :meth:`AsyncQdrantClient.query_points` and is the
+    sole hook for access control on the dense leg. Pass ``None`` for "no filter"
+    (e.g. admin bypass)."""
     if query_vector is not None:
         vector = query_vector
     else:
@@ -57,6 +64,7 @@ async def _search_dense(
         collection_name=collection_name,
         query=vector,
         limit=k,
+        query_filter=query_filter,
     )
     hits: list[dict] = []
     for rank, hit in enumerate(response.points, start=1):
@@ -222,6 +230,7 @@ async def query_chunks(
     query_vector: list[float] | None = None,
     qdrant_limit_override: int | None = None,
     lexical_retriever: LexicalRetriever | None = None,
+    user: RagUser | None = None,
 ) -> list[dict]:
     """
     Hybrid retrieval: dense + lexical + RRF fusion.
@@ -245,12 +254,31 @@ async def query_chunks(
             Each returned hit should include ``chunk_id`` and either ``bm25_rank`` or
             ``bm25_score``. When omitted, BM25 is computed only on dense candidates
             (fallback mode, not full-corpus lexical retrieval).
+        user: Per-request identity (see :class:`app.access.RagUser`). When set and
+            non-admin, an access ``Filter`` is built via
+            :func:`app.access.build_qdrant_access_filter` and applied to the dense
+            leg only. The BM25 fallback runs over the (already-filtered) dense pool,
+            so it cascades for free; an out-of-process ``lexical_retriever`` is the
+            caller's responsibility to filter symmetrically.
 
     1. Dense: embed query (unless ``query_vector``) → Qdrant vector search
     2. Lexical: use ``lexical_retriever`` results, or BM25-over-dense fallback
     3. RRF: fuse both rankings, return top k
     """
-    with bind_request_context(request_id, session_id, trace_id=trace_id):
+    with bind_request_context(
+        request_id,
+        session_id,
+        trace_id=trace_id,
+        user_id=user.id if user else None,
+    ):
+        qdrant_filter = build_qdrant_access_filter(user)
+        # `should_count` is the visible knob for "did we actually filter, and how
+        # many dimensions did we union?" It's None for admin (no-op) and 0 if a
+        # non-admin user somehow has zero dimensions (the deny-everything sentinel).
+        if qdrant_filter is None:
+            access_filter_should_count: int | None = None
+        else:
+            access_filter_should_count = len(qdrant_filter.should or [])
 
         async def _run(ac: AsyncQdrantClient) -> list[dict]:
             coll = _qdrant_collection_name(collection_name)
@@ -260,11 +288,22 @@ async def query_chunks(
                 else top_k_dense
             )
             logger.info(
-                "query_chunks start collection=%s k=%s dense_limit=%s cached_vec=%s",
+                "query_chunks start collection=%s k=%s dense_limit=%s cached_vec=%s "
+                "access_filter_applied=%s access_filter_should_count=%s",
                 coll,
                 k,
                 dense_limit,
                 query_vector is not None,
+                qdrant_filter is not None,
+                access_filter_should_count if access_filter_should_count is not None else "-",
+                extra={
+                    "access_filter_applied": qdrant_filter is not None,
+                    "access_filter_should_count": (
+                        access_filter_should_count
+                        if access_filter_should_count is not None
+                        else 0
+                    ),
+                },
             )
 
             dense_hits = await _search_dense(
@@ -276,9 +315,13 @@ async def query_chunks(
                 session_id=session_id,
                 trace_id=trace_id,
                 query_vector=query_vector,
+                query_filter=qdrant_filter,
             )
             if not dense_hits:
-                logger.info("query_chunks done dense_hits=0 returned=0")
+                logger.info(
+                    "query_chunks done dense_hits=0 returned=0 access_filter_applied=%s",
+                    qdrant_filter is not None,
+                )
                 return []
 
             lexical_hits: list[dict] | None = None

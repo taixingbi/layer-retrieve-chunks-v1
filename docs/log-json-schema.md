@@ -26,6 +26,7 @@ All keys below are **always present** on normal log lines.
 | `request_id` | string | From request context, or `"-"` if unset. On `/v1/rag/query`, from `X-Request-Id` when sent, otherwise a server-generated UUID for that request. |
 | `session_id` | string | From request context when `request_id` is set; otherwise `"-"` (avoids orphan session ids). On `/v1/rag/query`, from `X-Session-Id` when sent, otherwise a server-generated UUID for that request. |
 | `trace_id` | string | From request context when set, else `"-"`. On `/v1/rag/query`, sourced from the optional `X-Trace-Id` request header; forwarded to the embedding API as `X-Trace-Id` when present. |
+| `user_id` | string | From request context when set, else `"-"`. On `/v1/rag/query`, sourced from the optional `X-User-Id` request header (see [`docs/access-control.md`](access-control.md)). |
 | `method` | string | HTTP method from context, or `"-"`. |
 | `path` | string | HTTP path from context, or `"-"`. |
 | `status` | string | HTTP status from context, or from `logger.info(..., extra={"status": "200"})`, or `"-"`. |
@@ -58,6 +59,9 @@ Defined allowlist in code (`_EXTRA_JSON_FIELDS`):
 - `follow_up_candidates_count` — `len(follow_up_candidates_full)`.
 - `follow_up_ranked` — array of final questions returned to the client (rerank top-N).
 - `follow_up_ranked_count` — `len(follow_up_ranked)`.
+- `user_roles`, `user_groups`, `user_teams` — full lists from the per-request `RagUser`. Emitted on `complete_rag_answer start` lines so dashboards can pivot on identity dimensions (the `user_id` is in the base record).
+- `access_filter_applied` — `true` on `query_chunks start` for non-admin requests (a Qdrant payload filter is sent with `query_points`); `false` for admins (bypass).
+- `access_filter_should_count` — number of `should` clauses in the access filter (1, 2, or 3 depending on which user dimensions are populated; `0` for admin requests). See [`docs/access-control.md`](access-control.md) for the full filter shape.
 
 To add new structured fields for dashboards or alerts, extend that tuple in `logging_config.py` and pass them through `extra=`.
 
@@ -66,19 +70,19 @@ To add new structured fields for dashboards or alerts, extend that tuple in `log
 **Info during retrieval (no exception, no `error` key):**
 
 ```json
-{"ts": "2026-05-02T19:33:18.326075-04:00", "level": "INFO", "request_id": "req-abc123", "session_id": "ses-xyz789", "trace_id": "trace-001", "method": "POST", "path": "/v1/rag/query", "status": "200", "message": "query_chunks start collection=taixing_knowledge_dev k=50 dense_limit=50 cached_vec=True"}
+{"ts": "2026-05-02T19:33:18.326075-04:00", "level": "INFO", "request_id": "req-abc123", "session_id": "ses-xyz789", "trace_id": "trace-001", "user_id": "taixing", "method": "POST", "path": "/v1/rag/query", "status": "200", "message": "query_chunks start collection=taixing_knowledge_dev k=50 dense_limit=50 cached_vec=True access_filter_applied=True access_filter_should_count=3", "access_filter_applied": true, "access_filter_should_count": 3}
 ```
 
 **RAG request finished (optional latency fields on `complete_rag_answer done`):**
 
 ```json
-{"ts": "2026-05-02T19:33:19.100000-04:00", "level": "INFO", "request_id": "req-abc123", "session_id": "ses-xyz789", "trace_id": "trace-001", "method": "POST", "path": "/v1/rag/query", "status": "200", "message": "complete_rag_answer done k_used=10 follow_up_questions=3 latency_total_ms=842", "duration_ms": 842, "latency_total_ms": 842, "latency_embed_ms": 120, "latency_retrieve_ms": 90, "latency_chunk_rerank_ms": 200, "latency_chat_ms": 350, "latency_follow_up_chat_ms": 60, "latency_follow_up_rerank_ms": 22}
+{"ts": "2026-05-02T19:33:19.100000-04:00", "level": "INFO", "request_id": "req-abc123", "session_id": "ses-xyz789", "trace_id": "trace-001", "user_id": "taixing", "method": "POST", "path": "/v1/rag/query", "status": "200", "message": "complete_rag_answer done k_used=10 follow_up_questions=3 latency_total_ms=842", "duration_ms": 842, "latency_total_ms": 842, "latency_embed_ms": 120, "latency_retrieve_ms": 90, "latency_chunk_rerank_ms": 200, "latency_chat_ms": 350, "latency_follow_up_chat_ms": 60, "latency_follow_up_rerank_ms": 22}
 ```
 
 **With exception (includes `error`):**
 
 ```json
-{"ts": "2026-05-02T12:00:00.000000-05:00", "level": "ERROR", "request_id": "-", "session_id": "-", "trace_id": "-", "method": "-", "path": "-", "status": "-", "message": "upstream failed", "error": "Traceback (most recent call last):\n  ..."}
+{"ts": "2026-05-02T12:00:00.000000-05:00", "level": "ERROR", "request_id": "-", "session_id": "-", "trace_id": "-", "user_id": "-", "method": "-", "path": "-", "status": "-", "message": "upstream failed", "error": "Traceback (most recent call last):\n  ..."}
 ```
 
 ## Related code

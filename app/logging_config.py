@@ -17,6 +17,7 @@ from .request_context import (
     get_request_id,
     get_session_id,
     get_trace_id,
+    get_user_id,
 )
 
 logger = logging.getLogger("layer_rag.query")
@@ -47,6 +48,11 @@ _EXTRA_JSON_FIELDS = (
     "follow_up_ranked_count",
     "ttft_ms",
     "gen_ms",
+    "user_roles",
+    "user_groups",
+    "user_teams",
+    "access_filter_should_count",
+    "access_filter_applied",
 )
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -66,6 +72,8 @@ class _RequestContextFilter(logging.Filter):
         record.session_id = "-" if rid == "-" else sid
         tid = get_trace_id()
         record.trace_id = tid if tid != "-" else "-"
+        uid = get_user_id()
+        record.user_id = uid if uid else "-"
         record.method = get_http_method()
         record.path = get_http_path()
         # ASGI response.start runs after the route returns; logs inside the route
@@ -89,6 +97,7 @@ class _JsonFormatter(logging.Formatter):
             "request_id": getattr(record, "request_id", "-"),
             "session_id": getattr(record, "session_id", "-"),
             "trace_id": getattr(record, "trace_id", "-"),
+            "user_id": getattr(record, "user_id", "-"),
             "method": getattr(record, "method", "-"),
             "path": getattr(record, "path", "-"),
             "status": getattr(record, "status", "-"),

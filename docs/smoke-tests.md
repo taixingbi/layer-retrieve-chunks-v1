@@ -36,6 +36,19 @@ Expected when Qdrant is reachable: `200 {"status":"ready"}`. When Qdrant is unre
 | `X-Session-Id` | no | If missing or blank, the server generates a UUID for this call. Forwarded to the embedding API; appears as `session_id` in stderr JSON logs. |
 | `X-Trace-Id` | no | When set, forwarded to embedding API as `X-Trace-Id` and appears as `trace_id` in stderr JSON logs (else `"-"`). Not auto-generated. |
 
+## Access-control headers
+
+`POST /v1/rag/query` also reads identity from headers (header-only; putting `user_id`, `user_roles`, `user_groups`, or `user_teams` in the body returns **400**). The four dimensions drive a Qdrant payload filter on `payload.access.{roles,groups,teams}`. See [access-control.md](access-control.md) for the full semantics table (admin bypass, deny-by-default for untagged chunks, `anyuser` public default).
+
+| Header | Required | Notes |
+|--------|----------|-------|
+| `X-User-Id` | no | Default `"-"`. Echoed on `200` (JSON and SSE); appears as `user_id` in stderr JSON logs. |
+| `X-User-Roles` | no | Comma-separated. Default `["anyuser"]` when missing or empty (anonymous public access). `admin` (case-insensitive) bypasses the filter. |
+| `X-User-Groups` | no | Comma-separated. Default `[]`. |
+| `X-User-Teams` | no | Comma-separated. Default `[]`. |
+
+Sending **no** access headers is the same as anonymous: the request asks for chunks whose `access.roles` contains `"anyuser"`. Untagged chunks (no `payload.access`) are returned only to admins.
+
 ## RAG query — minimal (no correlation headers)
 
 Same as default; logs and embedding calls use the server-generated `request_id` / `session_id` for this request. On **200** responses, the same values are echoed in `X-Request-Id` and `X-Session-Id` response headers (use `curl -D -` to capture them).
@@ -126,17 +139,21 @@ curl -sS -X POST http://127.0.0.1:8000/v1/rag/query \
 
 ## RAG query — streaming (SSE)
 
-Opt in with **any** of: `?stream=1` query param, `Accept: text/event-stream` header, or `"stream": true` in the JSON body. Response is `text/event-stream` with `Cache-Control: no-cache` and `X-Accel-Buffering: no`. See [streaming.md](streaming.md) for the full event sequence and error semantics; behind nginx-ingress, also set `nginx.ingress.kubernetes.io/proxy-buffering: "off"` on the route.
+Opt in with **either** of: `Accept: text/event-stream` header, or `"stream": true` in the JSON body. (Query-param triggers like `?stream=1` are not supported.) Response is `text/event-stream` with `Cache-Control: no-cache` and `X-Accel-Buffering: no`. See [streaming.md](streaming.md) for the full event sequence and error semantics; behind nginx-ingress, also set `nginx.ingress.kubernetes.io/proxy-buffering: "off"` on the route.
 
-Query-param style (most explicit on the wire):
+Header style (`Accept: text/event-stream`). Identity headers are optional; this example includes them so the chunk-level filter is visible end-to-end.
 
 ```bash
-curl -N -sS -X POST 'http://127.0.0.1:8000/v1/rag/query?stream=1' \
+curl -N -sS -X POST 'http://127.0.0.1:8000/v1/rag/query' \
   -H "Content-Type: application/json" \
   -H "Accept: text/event-stream" \
   -H "X-Request-Id: req-stream-1" \
   -H "X-Session-Id: ses-stream-1" \
   -H "X-Trace-Id: trace-stream-1" \
+  -H "X-User-Id: taixing" \
+  -H "X-User-Roles: hr" \
+  -H "X-User-Groups: engineering" \
+  -H "X-User-Teams: rag-platform" \
   -d '{
     "question": "what is taixing visa",
     "collection_base": "taixing_knowledge",
@@ -145,7 +162,7 @@ curl -N -sS -X POST 'http://127.0.0.1:8000/v1/rag/query?stream=1' \
   }'
 ```
 
-Body-flag style (handy when callers can't change the URL or `Accept` header):
+Body-flag style (handy when callers can't change the `Accept` header):
 
 ```bash
 curl -N -sS -X POST http://127.0.0.1:8000/v1/rag/query \
@@ -171,6 +188,14 @@ curl -sS -o /dev/stdout -w "\nHTTP %{http_code}\n" \
   -H "Content-Type: application/json" \
   -d '{"question":"q","collection_base":"taixing_knowledge","request_id":"x","session_id":"y"}'
 # -> HTTP 400 (request_id/session_id/trace_id must not appear in body)
+```
+
+```bash
+curl -sS -o /dev/stdout -w "\nHTTP %{http_code}\n" \
+  -X POST http://127.0.0.1:8000/v1/rag/query \
+  -H "Content-Type: application/json" \
+  -d '{"question":"q","collection_base":"taixing_knowledge","user_roles":["admin"]}'
+# -> HTTP 400 (user_id/user_roles/user_groups/user_teams must not appear in body)
 ```
 
 ## Embedding API (upstream)
@@ -246,7 +271,7 @@ curl -sS "${QDRANT_URL}/collections/taixing_knowledge_${ENV}" \
 | Liveness | `GET` | `http://127.0.0.1:8000/health` |
 | Readiness (probes Qdrant) | `GET` | `http://127.0.0.1:8000/ready` |
 | RAG answer (JSON) | `POST` | `http://127.0.0.1:8000/v1/rag/query` |
-| RAG answer (SSE) | `POST` | `http://127.0.0.1:8000/v1/rag/query?stream=1` |
+| RAG answer (SSE) | `POST` | `http://127.0.0.1:8000/v1/rag/query` (with `Accept: text/event-stream` or `"stream": true` in body) |
 | MCP transport | (MCP) | `http://127.0.0.1:8000/mcp` |
 | Embedding (upstream) | `POST` | `${EMBEDDING_URL}/v1/embeddings` |
 | Chat (upstream) | `POST` | `${INFERENCE_URL}/v1/chat/completions` |

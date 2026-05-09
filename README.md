@@ -148,6 +148,8 @@ curl -sS http://127.0.0.1:8000/ready
 
 Correlation on `/v1/rag/query` is **header-only** (never put `request_id`, `session_id`, or `trace_id` in the JSON body — **400**). `X-Request-Id` and `X-Session-Id` are optional: if either header is missing or blank, the server generates a UUID for that call. `X-Trace-Id` is optional and is not auto-generated. On **200** responses, `X-Request-Id`, `X-Session-Id`, and `X-Trace-Id` (when sent) are echoed in response headers so clients can confirm or read server-generated IDs (`curl -D -`).
 
+**Access control.** `/v1/rag/query` also reads `X-User-Id` / `X-User-Roles` / `X-User-Groups` / `X-User-Teams` (header-only; sending these in the body returns **400**). Roles default to `["anyuser"]` when absent so chunks tagged `access.roles ∋ "anyuser"` form the public set; `admin` bypasses filtering; chunks without `payload.access` are deny-by-default for non-admins. The match rule is **ANY-OVERLAP across dimensions** (`should` in Qdrant). `X-User-Id` is echoed on **200** alongside the correlation headers. Full semantics, payload shape, and `curl` examples: [`docs/access-control.md`](docs/access-control.md).
+
 ```bash
 curl -sS -X POST http://127.0.0.1:8000/v1/rag/query \
   -H "Content-Type: application/json" \
@@ -181,7 +183,7 @@ curl -sS -X POST http://127.0.0.1:8000/v1/rag/query \
 
 **Optional `retrieval_hits` (eval / debug):** If any of these booleans is true, the response also includes `retrieval_hits`: `include_retrieval_hits`, `debug`, `trace_retrieval`, `return_retrieval_hits`. Each hit is a small object (no passage text): `stage` (`retrieve` = RRF order after hybrid fusion, `rerank` = cross-encoder order when reranking ran), `rank` (1-based within that stage), `chunk_id`, `source`, `score`. Scores are not comparable across stages (retrieve uses RRF; rerank uses the rerank API).
 
-**Streaming (SSE).** For chat-style UIs, opt in via `?stream=1`, `Accept: text/event-stream`, or `"stream": true` in the JSON body. The stream is `text/event-stream`: `meta` and early `latency` phases, then optional `retrieval_widen` events (context slice retry after `NOT_FOUND` / empty — **no** streamed `NOT_FOUND` text), then `answer_start` and `answer_delta` chunks for the **final** answer only, `answer_end`, `citations`, `follow_up_questions`, remaining `latency` lines (including `total` wall time), and `done`. Errors after the first frame use `event: error` then `event: done`. Response headers match JSON mode plus `Cache-Control: no-cache` and `X-Accel-Buffering: no`. **Pause / Stop from the UI** = abort the `fetch` (use `AbortController`); the server cancels the upstream chat completion automatically and frees the GPU slot. Details and a JS / `httpx` cancel example: [`docs/streaming.md`](docs/streaming.md).
+**Streaming (SSE).** For chat-style UIs, opt in via `Accept: text/event-stream` or `"stream": true` in the JSON body (query-param triggers like `?stream=1` are not supported). The stream is `text/event-stream`: `meta` and early `latency` phases, then optional `retrieval_widen` events (context slice retry after `NOT_FOUND` / empty — **no** streamed `NOT_FOUND` text), then `answer_start` and `answer_delta` chunks for the **final** answer only, `answer_end`, `citations`, `follow_up_questions`, remaining `latency` lines (including `total` wall time), and `done`. Errors after the first frame use `event: error` then `event: done`. Response headers match JSON mode plus `Cache-Control: no-cache` and `X-Accel-Buffering: no`. **Pause / Stop from the UI** = abort the `fetch` (use `AbortController`); the server cancels the upstream chat completion automatically and frees the GPU slot. Details and a JS / `httpx` cancel example: [`docs/streaming.md`](docs/streaming.md).
 
 ```bash
 curl -sS -X POST http://127.0.0.1:8000/v1/rag/query \
@@ -197,7 +199,7 @@ curl -sS -X POST http://127.0.0.1:8000/v1/rag/query \
   }'
 ```
 
-See also [`docs/streaming.md`](docs/streaming.md), [`docs/smoke-tests.md`](docs/smoke-tests.md), [`docs/follow-up-questions.md`](docs/follow-up-questions.md), and [`docs/log-json-schema.md`](docs/log-json-schema.md).
+See also [`docs/streaming.md`](docs/streaming.md), [`docs/access-control.md`](docs/access-control.md), [`docs/smoke-tests.md`](docs/smoke-tests.md), [`docs/follow-up-questions.md`](docs/follow-up-questions.md), and [`docs/log-json-schema.md`](docs/log-json-schema.md).
 
 **Cursor** (`.cursor/mcp.json` or global MCP settings): point the server at the repo root so `.env` resolves; use your venv’s `python` if needed:
 
