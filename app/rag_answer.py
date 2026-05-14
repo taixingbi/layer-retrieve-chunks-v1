@@ -193,6 +193,7 @@ async def _rerank_chunks(
     request_id: str,
     session_id: str,
     trace_id: str | None = None,
+    conversation_id: str | None = None,
 ) -> list[dict]:
     if not chunks:
         return []
@@ -205,6 +206,7 @@ async def _rerank_chunks(
         request_id=request_id,
         session_id=session_id,
         trace_id=trace_id,
+        conversation_id=conversation_id,
     )
     out: list[dict] = []
     for rank, row in enumerate(rows, start=1):
@@ -266,11 +268,16 @@ async def _rag_prepare(
     follow_up_final: int,
     trace_id: str | None = None,
     user: RagUser | None = None,
+    conversation_id: str,
 ) -> _RagPrep:
     """Resolve config defaults, validate args, embed the query, retrieve chunks, and
     optionally chunk-rerank. Caller must already be inside ``bind_request_context`` so
     log records pick up correlation IDs. Raises ``ValueError`` on bad args or empty
-    retrieval (caller maps that to a 4xx / SSE ``error`` event)."""
+    retrieval (caller maps that to a 4xx / SSE ``error`` event).
+
+    ``conversation_id`` is the resolved thread id (non-empty) forwarded to embedding,
+    retrieval, and rerank upstream JSON bodies when supported by the gateway.
+    """
     if max_tokens is None:
         max_tokens = get_inference_max_tokens()
     if rerank_top_n is None:
@@ -352,6 +359,7 @@ async def _rag_prepare(
         request_id=request_id,
         session_id=session_id,
         trace_id=trace_id,
+        conversation_id=conversation_id,
     )
     embed_ms = _elapsed_ms(t_embed)
 
@@ -367,6 +375,7 @@ async def _rag_prepare(
         query_vector=query_vector,
         qdrant_limit_override=retrieve_pool,
         user=user,
+        conversation_id=conversation_id,
     )
     retrieve_ms = _elapsed_ms(t_ret)
     if not chunks_full:
@@ -387,6 +396,7 @@ async def _rag_prepare(
                 request_id=request_id,
                 session_id=session_id,
                 trace_id=trace_id,
+                conversation_id=conversation_id,
             )
             chunk_rerank_ms = _elapsed_ms(t_rr)
             if reranked:
@@ -509,6 +519,7 @@ async def complete_rag_answer(
             follow_up_final=follow_up_final,
             trace_id=trace_id,
             user=user,
+            conversation_id=conv,
         )
 
         current_k = prep.initial_k
@@ -697,6 +708,7 @@ async def complete_rag_answer_stream(
             follow_up_final=follow_up_final,
             trace_id=trace_id,
             user=user,
+            conversation_id=conv,
         )
 
         yield {

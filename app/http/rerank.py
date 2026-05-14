@@ -18,11 +18,15 @@ async def rerank_texts(
     request_id: str,
     session_id: str,
     trace_id: str | None = None,
+    conversation_id: str | None = None,
     timeout: float = 30.0,
 ) -> list[dict]:
     """
     Return ranked rows with ``index`` and ``score``. Correlation forwarded as
     ``X-Request-Id`` / ``X-Session-Id`` / ``X-Trace-Id`` (last only when set).
+
+    When ``conversation_id`` is non-empty after strip, it is included in the JSON body
+    (OpenAI-compatible extension for gateways that accept it on ``/v1/rerank``).
 
     Expected API shape:
     {
@@ -32,12 +36,15 @@ async def rerank_texts(
     if not documents or top_n < 1:
         return []
     url = f"{base_url.rstrip('/')}/v1/rerank"
-    payload = {
+    cid = (conversation_id or "").strip()
+    payload: dict[str, object] = {
         "model": model,
         "query": query,
         "documents": documents,
         "top_n": min(top_n, len(documents)),
     }
+    if cid:
+        payload["conversation_id"] = cid
     headers = {
         "Content-Type": "application/json",
         **correlation_headers(request_id, session_id, trace_id=trace_id),

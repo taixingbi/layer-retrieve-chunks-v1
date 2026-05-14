@@ -219,6 +219,7 @@ async def _rerank_follow_up_strings(
     request_id: str,
     session_id: str,
     trace_id: str | None = None,
+    conversation_id: str | None = None,
 ) -> list[str]:
     """Rerank candidate questions; return top ``top_n`` strings in score order.
 
@@ -239,6 +240,7 @@ async def _rerank_follow_up_strings(
             request_id=request_id,
             session_id=session_id,
             trace_id=trace_id,
+            conversation_id=conversation_id,
         )
     except Exception as e:
         logger.warning("follow_up rerank failed reason=%s", str(e))
@@ -330,6 +332,7 @@ async def generate_follow_ups(
         request_id=request_id,
         session_id=session_id,
         trace_id=trace_id,
+        conversation_id=conversation_id,
     )
     rr_ms = _elapsed_ms(rr_t0)
     if ranked:

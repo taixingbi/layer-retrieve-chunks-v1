@@ -202,13 +202,15 @@ curl -sS -o /dev/stdout -w "\nHTTP %{http_code}\n" \
 
 Same path/headers as [`app/http/embed.py`](../app/http/embed.py) (`POST /v1/embeddings`). `X-Trace-Id` is forwarded only when present.
 
+When the RAG HTTP path resolves a `conversation_id` (JSON body on `/v1/rag/query` or auto `conv_<hex>`), the same value is sent in the embeddings JSON body so gateways can correlate (optional field — omit for hand tests if your server ignores unknown keys).
+
 ```bash
 curl -sS -X POST "${EMBEDDING_URL}/v1/embeddings" \
   -H "X-Request-Id: request_id_1" \
   -H "X-Session-Id: session_id_1" \
   -H "X-Trace-Id: trace-001" \
   -H "Content-Type: application/json" \
-  -d "{\"model\": \"${EMBEDDING_MODEL}\", \"input\": \"hello world\"}"
+  -d "{\"model\": \"${EMBEDDING_MODEL}\", \"conversation_id\": \"conv_embed_1\", \"input\": \"hello world\"}"
 ```
 
 ## Inference / chat (upstream)
@@ -234,6 +236,8 @@ curl -sS -o /dev/null -w "%{http_code}\n" "${INFERENCE_URL}/docs"
 
 Used by [`app/http/rerank.py`](../app/http/rerank.py) when `use_reranker=true`. Path is `POST /v1/rerank` on `RERANK_URL`. Same correlation headers as embedding (`X-Trace-Id` forwarded only when set).
 
+On `/v1/rag/query`, the resolved `conversation_id` is also included in the rerank JSON body when non-empty (optional gateway field).
+
 ```bash
 curl -sS -X POST "${RERANK_URL}/v1/rerank" \
   -H "X-Request-Id: request_id_1" \
@@ -242,6 +246,7 @@ curl -sS -X POST "${RERANK_URL}/v1/rerank" \
   -H "Content-Type: application/json" \
   -d "{
     \"model\": \"${RERANK_MODEL}\",
+    \"conversation_id\": \"conv_rerank_1\",
     \"query\": \"what is taixing visa\",
     \"documents\": [\"Taixing has an H1B visa.\", \"Jersey City is in NJ.\", \"The capital of France is Paris.\"],
     \"top_n\": 3

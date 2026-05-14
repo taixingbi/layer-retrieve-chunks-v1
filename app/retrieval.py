@@ -48,17 +48,23 @@ async def _search_dense(
     trace_id: str | None = None,
     query_vector: list[float] | None = None,
     query_filter: Filter | None = None,
+    conversation_id: str | None = None,
 ) -> list[dict]:
     """Dense vector search via Qdrant. Pass ``query_vector`` to skip re-embedding the query.
 
     ``query_filter`` is forwarded to :meth:`AsyncQdrantClient.query_points` and is the
     sole hook for access control on the dense leg. Pass ``None`` for "no filter"
-    (e.g. admin bypass)."""
+    (e.g. admin bypass).
+    ``conversation_id`` is forwarded to :func:`embed_text` when a dense embed is needed."""
     if query_vector is not None:
         vector = query_vector
     else:
         vector = await embed_text(
-            query, request_id=request_id, session_id=session_id, trace_id=trace_id
+            query,
+            request_id=request_id,
+            session_id=session_id,
+            trace_id=trace_id,
+            conversation_id=conversation_id,
         )
     response = await client.query_points(
         collection_name=collection_name,
@@ -231,6 +237,7 @@ async def query_chunks(
     qdrant_limit_override: int | None = None,
     lexical_retriever: LexicalRetriever | None = None,
     user: RagUser | None = None,
+    conversation_id: str | None = None,
 ) -> list[dict]:
     """
     Hybrid retrieval: dense + lexical + RRF fusion.
@@ -260,6 +267,8 @@ async def query_chunks(
             leg only. The BM25 fallback runs over the (already-filtered) dense pool,
             so it cascades for free; an out-of-process ``lexical_retriever`` is the
             caller's responsibility to filter symmetrically.
+        conversation_id: Optional thread id forwarded to the embedding API JSON body when
+            non-empty (same contract as chat/rerank gateways).
 
     1. Dense: embed query (unless ``query_vector``) → Qdrant vector search
     2. Lexical: use ``lexical_retriever`` results, or BM25-over-dense fallback
@@ -270,6 +279,7 @@ async def query_chunks(
         session_id,
         trace_id=trace_id,
         user_id=user.id if user else None,
+        conversation_id=(conversation_id or "").strip() or None,
     ):
         qdrant_filter = build_qdrant_access_filter(user)
         # `should_count` is the visible knob for "did we actually filter, and how
@@ -316,6 +326,7 @@ async def query_chunks(
                 trace_id=trace_id,
                 query_vector=query_vector,
                 query_filter=qdrant_filter,
+                conversation_id=conversation_id,
             )
             if not dense_hits:
                 logger.info(
