@@ -42,7 +42,7 @@ from app.access import RagUser, compact_for_log
 from app.asyncio_util import run_async
 from app.follow_up import generate_follow_ups
 from app.http.embed import embed_text
-from app.http.inference import chat_complete, chat_complete_stream
+from app.http.inference import chat_complete, chat_complete_stream, resolve_conversation_id
 from app.http.rerank import rerank_texts
 from app.logging_config import logger
 from app.retrieval import query_chunks
@@ -458,6 +458,7 @@ async def complete_rag_answer(
     include_retrieval_hits: bool = False,
     trace_id: str | None = None,
     user: RagUser | None = None,
+    conversation_id: str | None = None,
 ) -> tuple[str, list[dict], list[str], dict[str, int], list[dict]]:
     """
     ``query_chunks`` → numbered context → ``POST .../v1/chat/completions``.
@@ -481,11 +482,13 @@ async def complete_rag_answer(
 
     Set ``expand_on_not_found=False`` for a single chat call at the initial ``k`` (typical for eval).
     """
+    conv = resolve_conversation_id(conversation_id)
     with bind_request_context(
         request_id,
         session_id,
         trace_id=trace_id,
         user_id=user.id if user else None,
+        conversation_id=conv,
     ):
         wall_t0 = time.perf_counter()
         prep = await _rag_prepare(
@@ -535,6 +538,7 @@ async def complete_rag_answer(
                 request_id=request_id,
                 session_id=session_id,
                 trace_id=trace_id,
+                conversation_id=conv,
             )
             chat_ms_total += _elapsed_ms(t_chat)
             if not _answer_needs_more_context(last_answer):
@@ -585,6 +589,7 @@ async def complete_rag_answer(
                 request_id=request_id,
                 session_id=session_id,
                 trace_id=trace_id,
+                conversation_id=conv,
             )
         else:
             logger.info(
@@ -644,6 +649,7 @@ async def complete_rag_answer_stream(
     include_retrieval_hits: bool = False,
     trace_id: str | None = None,
     user: RagUser | None = None,
+    conversation_id: str | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """Streaming sibling of :func:`complete_rag_answer`. Yields event dicts (each carries
     a ``type`` key naming the SSE event) in this order on a happy path:
@@ -664,11 +670,13 @@ async def complete_rag_answer_stream(
     that's actually a 4xx error. After the first event is yielded the HTTP status is
     locked at 200 — any later upstream failure surfaces as in-band ``error`` + ``done``
     (handled in :mod:`app.main`)."""
+    conv = resolve_conversation_id(conversation_id)
     with bind_request_context(
         request_id,
         session_id,
         trace_id=trace_id,
         user_id=user.id if user else None,
+        conversation_id=conv,
     ):
         wall_t0 = time.perf_counter()
         prep = await _rag_prepare(
@@ -697,6 +705,7 @@ async def complete_rag_answer_stream(
             "session_id": session_id,
             "trace_id": trace_id,
             "user_id": user.id if user else "-",
+            "conversation_id": conv,
             "collection": collection_base,
             "k": k,
             "k_max": k_max,
@@ -732,6 +741,7 @@ async def complete_rag_answer_stream(
                 request_id=request_id,
                 session_id=session_id,
                 trace_id=trace_id,
+                conversation_id=conv,
             ):
                 buf.append(delta)
             chat_ms_total += _elapsed_ms(t_chat)
@@ -802,6 +812,7 @@ async def complete_rag_answer_stream(
                 request_id=request_id,
                 session_id=session_id,
                 trace_id=trace_id,
+                conversation_id=conv,
             )
         else:
             logger.info(

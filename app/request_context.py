@@ -8,6 +8,7 @@ _request_id_ctx: ContextVar[str] = ContextVar("request_id", default="-")
 _session_id_ctx: ContextVar[str] = ContextVar("session_id", default="-")
 _trace_id_ctx: ContextVar[str] = ContextVar("trace_id", default="-")
 _user_id_ctx: ContextVar[str] = ContextVar("user_id", default="-")
+_conversation_id_ctx: ContextVar[str] = ContextVar("conversation_id", default="-")
 _http_method_ctx: ContextVar[str] = ContextVar("http_method", default="-")
 _http_path_ctx: ContextVar[str] = ContextVar("http_path", default="-")
 _http_status_ctx: ContextVar[str] = ContextVar("http_status", default="-")
@@ -29,6 +30,10 @@ def get_user_id() -> str:
     return _user_id_ctx.get()
 
 
+def get_conversation_id() -> str:
+    return _conversation_id_ctx.get()
+
+
 def get_http_method() -> str:
     return _http_method_ctx.get()
 
@@ -48,6 +53,7 @@ def bind_request_context(
     *,
     trace_id: str | None = None,
     user_id: str | None = None,
+    conversation_id: str | None = None,
 ):
     """Bind trace + identity ids for the current call (embedding / retrieval / RAG).
 
@@ -55,15 +61,21 @@ def bind_request_context(
     use ``"-"`` or ``None`` for anonymous. The full role / group / team lists are
     propagated as call kwargs (``user=``), not contextvars — only the id is
     needed by the logger to stamp every line.
+
+    ``conversation_id`` is the chat thread id forwarded to ``/v1/chat/completions``
+    (see ``app.http.inference.resolve_conversation_id``). Use ``"-"`` or ``None``
+    when not in a RAG chat context.
     """
     rid = (request_id or "").strip() or "-"
     sid = (session_id or "").strip() or "-"
     tid = (trace_id or "").strip() or "-"
     uid = (user_id or "").strip() or "-"
+    cid = (conversation_id or "").strip() or "-"
     t_rid = _request_id_ctx.set(rid)
     t_sid = _session_id_ctx.set(sid)
     t_tid = _trace_id_ctx.set(tid)
     t_uid = _user_id_ctx.set(uid)
+    t_cid = _conversation_id_ctx.set(cid)
     try:
         yield
     finally:
@@ -71,6 +83,7 @@ def bind_request_context(
         _session_id_ctx.reset(t_sid)
         _trace_id_ctx.reset(t_tid)
         _user_id_ctx.reset(t_uid)
+        _conversation_id_ctx.reset(t_cid)
 
 
 @contextmanager

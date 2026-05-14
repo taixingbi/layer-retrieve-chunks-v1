@@ -5,12 +5,23 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+import uuid
 from collections.abc import AsyncIterator
 
 import httpx
 
 from app.http._correlation import correlation_headers
 from app.logging_config import logger
+
+
+def resolve_conversation_id(raw: str | None) -> str:
+    """Thread id for chat completions (OpenAI-compatible extension used by inference gateways).
+
+    Omitted or blank values get a fresh ``conv_<hex>`` id, matching
+    ``layer-gateway-inference-v1`` behavior.
+    """
+    s = (raw or "").strip()
+    return s if s else f"conv_{uuid.uuid4().hex}"
 
 
 async def chat_complete(
@@ -22,16 +33,23 @@ async def chat_complete(
     request_id: str,
     session_id: str,
     trace_id: str | None = None,
+    conversation_id: str | None = None,
     timeout: float = 60.0,
 ) -> str:
     """Return assistant content from one chat completion call. Correlation forwarded as
-    ``X-Request-Id`` / ``X-Session-Id`` / ``X-Trace-Id`` (last only when set)."""
+    ``X-Request-Id`` / ``X-Session-Id`` / ``X-Trace-Id`` (last only when set).
+
+    When ``conversation_id`` is non-empty after strip, it is sent in the JSON body as
+    ``conversation_id`` (same contract as ``layer-gateway-inference-v1``)."""
     url = f"{base_url.rstrip('/')}/v1/chat/completions"
-    payload = {
+    payload: dict[str, object] = {
         "model": model,
         "messages": messages,
         "max_tokens": max_tokens,
     }
+    cid = (conversation_id or "").strip()
+    if cid:
+        payload["conversation_id"] = cid
     headers = {
         "Content-Type": "application/json",
         **correlation_headers(request_id, session_id, trace_id=trace_id),
@@ -70,19 +88,24 @@ async def chat_complete_stream(
     request_id: str,
     session_id: str,
     trace_id: str | None = None,
+    conversation_id: str | None = None,
     timeout: float = 60.0,
 ) -> AsyncIterator[str]:
     """Yield assistant ``content`` deltas as they arrive from a streaming chat-completions
     call (``stream: true``). Forwards correlation as ``X-Request-Id`` / ``X-Session-Id`` /
-    ``X-Trace-Id`` (last only when set). On exit, emits one structured log line with TTFT
+    ``X-Trace-Id`` (last only when set). Optional ``conversation_id`` is sent in the JSON
+    body when non-empty (gateway thread id). On exit, emits one structured log line with TTFT
     (time-to-first-token, ms) and total generation time (ms) for SLO dashboards."""
     url = f"{base_url.rstrip('/')}/v1/chat/completions"
-    payload = {
+    payload: dict[str, object] = {
         "model": model,
         "messages": messages,
         "max_tokens": max_tokens,
         "stream": True,
     }
+    cid = (conversation_id or "").strip()
+    if cid:
+        payload["conversation_id"] = cid
     headers = {
         "Content-Type": "application/json",
         **correlation_headers(request_id, session_id, trace_id=trace_id),

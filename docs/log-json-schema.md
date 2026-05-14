@@ -5,7 +5,7 @@ Structured logs for **layer-rag-query** are emitted by the stdlib logger `layer_
 ## Goals
 
 - **Machine-parseable**: single-line JSON suitable for `jq`, log agents, or downstream indexing.
-- **Correlation**: tie log lines to embedding / RAG / HTTP work via `request_id`, `session_id`, and optional `trace_id` when context is set (`app.request_context`).
+- **Correlation**: tie log lines to embedding / RAG / HTTP work via `request_id`, `session_id`, optional `trace_id`, and optional `conversation_id` when context is set (`app.request_context`).
 - **HTTP hints**: optional `method`, `path`, `status` for ASGI routes when context or `extra=` supplies them.
 - **No noise**: omit `error` when there is no exception (no `"error": null`).
 
@@ -27,6 +27,7 @@ All keys below are **always present** on normal log lines.
 | `session_id` | string | From request context when `request_id` is set; otherwise `"-"` (avoids orphan session ids). On `/v1/rag/query`, from `X-Session-Id` when sent, otherwise a server-generated UUID for that request. |
 | `trace_id` | string | From request context when set, else `"-"`. On `/v1/rag/query`, sourced from the optional `X-Trace-Id` request header; forwarded to the embedding API as `X-Trace-Id` when present. |
 | `user_id` | string | From request context when set, else `"-"`. On `/v1/rag/query`, sourced from the optional `X-User-Id` request header (see [`docs/access-control.md`](access-control.md)). |
+| `conversation_id` | string | Chat thread id for inference gateway correlation; from `bind_request_context(..., conversation_id=...)` during RAG, else `"-"`. On `/v1/rag/query`, resolved from optional JSON `conversation_id` (or server-generated `conv_<hex>`); echoed as `X-Conversation-Id` and forwarded on every upstream `/v1/chat/completions` body (same contract as [layer-gateway-inference-v1](https://github.com/taixingbi/layer-gateway-inference-v1)). |
 | `method` | string | HTTP method from context, or `"-"`. |
 | `path` | string | HTTP path from context, or `"-"`. |
 | `status` | string | HTTP status from context, or from `logger.info(..., extra={"status": "200"})`, or `"-"`. |

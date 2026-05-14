@@ -21,6 +21,7 @@ from starlette.responses import JSONResponse, StreamingResponse
 from app.access import RagUser
 from app.asyncio_util import run_async
 from app.http.embed import embed_text as _embed_text_async
+from app.http.inference import resolve_conversation_id
 from app.logging_config import logger
 from app.qdrant.client import create_async_client, resolve_connection_params
 from app.rag_answer import complete_rag_answer, complete_rag_answer_stream
@@ -83,6 +84,7 @@ class AnswerFromInferenceBody(BaseModel):
     trace_retrieval: bool = False
     return_retrieval_hits: bool = False
     stream: bool = False
+    conversation_id: str | None = None
 
     @model_validator(mode="after")
     def _follow_up_final_lte_candidates(self) -> AnswerFromInferenceBody:
@@ -108,6 +110,7 @@ def _answer_payload(
     latency_ms: dict[str, int],
     retrieval_hits: list[dict],
     include_retrieval_hits: bool,
+    conversation_id: str,
 ) -> dict[str, Any]:
     """Build stable HTTP/MCP response payload (conditionally including retrieval_hits)."""
     out: dict[str, Any] = {
@@ -115,6 +118,7 @@ def _answer_payload(
         "citations": citations,
         "follow_up_questions": follow_up_questions,
         "latency_ms": latency_ms,
+        "conversation_id": conversation_id,
     }
     if include_retrieval_hits:
         out["retrieval_hits"] = retrieval_hits
@@ -128,6 +132,7 @@ async def answer_from_inference_payload_async(
     session_id: str,
     trace_id: str | None = None,
     user: RagUser | None = None,
+    conversation_id: str,
 ) -> dict[str, Any]:
     """Run RAG + chat (async). Raise ``ValueError`` or ``httpx.HTTPStatusError`` on failure."""
     if body.k_max < body.k:
@@ -153,6 +158,7 @@ async def answer_from_inference_payload_async(
         include_retrieval_hits=wants_hits,
         trace_id=trace_id,
         user=user,
+        conversation_id=conversation_id,
     )
     return _answer_payload(
         answer=answer,
@@ -161,6 +167,7 @@ async def answer_from_inference_payload_async(
         latency_ms=latency_ms,
         retrieval_hits=retrieval_hits,
         include_retrieval_hits=wants_hits,
+        conversation_id=conversation_id,
     )
 
 
@@ -224,11 +231,13 @@ def answer_from_inference(
     debug: bool = False,
     trace_retrieval: bool = False,
     return_retrieval_hits: bool = False,
+    conversation_id: str | None = None,
 ) -> dict[str, Any]:
     """Retrieve once (pool k_max), then chat; optional slice widen on NOT_FOUND. Set expand_on_not_found false for single-pass eval."""
     if follow_up_final > follow_up_candidates:
         raise ValueError("follow_up_final must be <= follow_up_candidates")
     wants_hits = include_retrieval_hits or debug or trace_retrieval or return_retrieval_hits
+    conv = resolve_conversation_id(conversation_id)
     answer, citations, follow_up_questions, latency_ms, retrieval_hits = run_async(
         complete_rag_answer(
             question,
@@ -248,6 +257,7 @@ def answer_from_inference(
             follow_up_candidates=follow_up_candidates,
             follow_up_final=follow_up_final,
             include_retrieval_hits=wants_hits,
+            conversation_id=conv,
         )
     )
     return _answer_payload(
@@ -257,6 +267,7 @@ def answer_from_inference(
         latency_ms=latency_ms,
         retrieval_hits=retrieval_hits,
         include_retrieval_hits=wants_hits,
+        conversation_id=conv,
     )
 
 
@@ -277,6 +288,11 @@ async def answer_from_inference_http(request: Request) -> JSONResponse:
     either an ``Accept: text/event-stream`` request header or ``"stream": true`` in
     the JSON body (the two are OR-ed). See ``docs/streaming.md`` for the event
     sequence and error semantics.
+
+    Optional JSON field ``conversation_id`` threads the chat turn through the inference
+    gateway (same contract as ``layer-gateway-inference-v1``): forwarded on every
+    ``/v1/chat/completions`` body; omitted or blank values get a server-generated
+    ``conv_<hex>`` id, echoed as ``X-Conversation-Id`` and in the JSON response.
     """
     method = request.method
     path = request.url.path
@@ -308,6 +324,8 @@ async def answer_from_inference_http(request: Request) -> JSONResponse:
     except ValidationError as e:
         return JSONResponse({"detail": e.errors()}, status_code=422)
 
+    conversation_id = resolve_conversation_id(body.conversation_id)
+
     if _wants_sse(request) or body.stream:
         async def sse_iter():
             """Yield SSE frames from ``complete_rag_answer_stream``. Once headers flushed
@@ -335,6 +353,7 @@ async def answer_from_inference_http(request: Request) -> JSONResponse:
                         include_retrieval_hits=body.wants_retrieval_hits(),
                         trace_id=trace_id,
                         user=user,
+                        conversation_id=conversation_id,
                     ):
                         ev_name = ev.pop("type")
                         yield _sse_event(ev_name, ev)
@@ -373,6 +392,7 @@ async def answer_from_inference_http(request: Request) -> JSONResponse:
             "X-Request-Id": request_id,
             "X-Session-Id": session_id,
             "X-User-Id": user.id,
+            "X-Conversation-Id": conversation_id,
             "Cache-Control": "no-cache",
             "X-Accel-Buffering": "no",
         }
@@ -393,6 +413,7 @@ async def answer_from_inference_http(request: Request) -> JSONResponse:
                 session_id=session_id,
                 trace_id=trace_id,
                 user=user,
+                conversation_id=conversation_id,
             )
     except ValueError as e:
         return JSONResponse({"detail": str(e)}, status_code=400)
@@ -405,6 +426,7 @@ async def answer_from_inference_http(request: Request) -> JSONResponse:
         "X-Request-Id": request_id,
         "X-Session-Id": session_id,
         "X-User-Id": user.id,
+        "X-Conversation-Id": conversation_id,
     }
     if trace_id:
         hdrs["X-Trace-Id"] = trace_id

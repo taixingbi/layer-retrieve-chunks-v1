@@ -157,6 +157,7 @@ async def _generate_follow_up_candidates(
     request_id: str,
     session_id: str,
     trace_id: str | None = None,
+    conversation_id: str | None = None,
 ) -> tuple[list[str], str]:
     """One chat call: returns ``(candidates, raw)`` where ``candidates`` is the parsed
     ``{"follow_up_questions": [...]}`` list (between ``min_count`` and ``max_count``
@@ -190,6 +191,7 @@ async def _generate_follow_up_candidates(
         request_id=request_id,
         session_id=session_id,
         trace_id=trace_id,
+        conversation_id=conversation_id,
     )
     candidates, empty_reason = _parse_follow_up_json(raw)
     if not candidates:
@@ -276,6 +278,7 @@ async def generate_follow_ups(
     request_id: str,
     session_id: str,
     trace_id: str | None = None,
+    conversation_id: str | None = None,
 ) -> tuple[list[str], int, int]:
     """Returns ``(questions, chat_ms, rerank_ms)``; times are zero when skipped or on failure."""
     if not chunks_used:
@@ -304,6 +307,7 @@ async def generate_follow_ups(
             request_id=request_id,
             session_id=session_id,
             trace_id=trace_id,
+            conversation_id=conversation_id,
         )
     except Exception as e:
         logger.warning(
