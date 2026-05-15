@@ -136,7 +136,7 @@ fastmcp run app/main.py:mcp --transport http --host 0.0.0.0 --port 8000
 
 `-m app.main` is the module-style entrypoint. In this mode, FastMCP uses the module's own startup (`mcp.run()`), so CLI transport/host/port flags are ignored.
 
-On **HTTP** transport, **MCP** clients use `http://127.0.0.1:8000/mcp` . The same process also serves **`POST http://127.0.0.1:8000/v1/rag/query`** (JSON body; default response includes `answer`, `citations`, `follow_up_questions`, and `latency_ms` — per-phase millisecond timings) for plain `curl` scripts, plus liveness/readiness probes:
+On **HTTP** transport, **MCP** clients use `http://127.0.0.1:8000/mcp` . The same process also serves **`POST http://127.0.0.1:8000/v1/rag/query`** (JSON body; default response includes `answer`, `citations`, `follow_up_questions`, `latency_ms`, and correlation fields `request_id`, `session_id`, `trace_id`, `conversation_id`) for plain `curl` scripts, plus liveness/readiness probes:
 
 - `GET /health` — always `200 {"status":"ok"}` while the process is up (no I/O, no headers required).
 - `GET /ready` — `200 {"status":"ready"}` when Qdrant responds to `get_collections`; `503 {"status":"not_ready","detail":"<error type>"}` otherwise.
@@ -177,7 +177,7 @@ curl -sS -X POST http://127.0.0.1:8000/v1/rag/query \
   }'
 ```
 
-**Response (default):** `answer` is model text (with inline `[n]` citations); `citations` lists only passages actually cited in `answer` (`cite_id`, `chunk_id`, `source`, `text`). `follow_up_questions` is always present (possibly `[]`): strings from a second chat call, trimmed by the reranker. `latency_ms` is always present (`total`, `embed`, `retrieve`, `chunk_rerank`, `chat`, `follow_up_chat`, `follow_up_rerank`).
+**Response (default):** `answer` is model text (with inline `[n]` citations); `citations` lists only passages actually cited in `answer` (`cite_id`, `chunk_id`, `source`, `text`). `follow_up_questions` is always present (possibly `[]`): strings from a second chat call, trimmed by the reranker. `latency_ms` is always present (`total`, `embed`, `retrieve`, `chunk_rerank`, `chat`, `follow_up_chat`, `follow_up_rerank`). Correlation ids mirror the request: `request_id`, `session_id`, optional `trace_id` (JSON `null` when the header was omitted), and resolved `conversation_id` (same values as response headers `X-Request-Id`, `X-Session-Id`, `X-Trace-Id`, `X-Conversation-Id`).
 
 **Optional body fields:** `"max_tokens": 512`, rerank controls `"rerank_top_n": 50`, `"rerank_return_top_k": 25` (must be `>= final_context_top_k` when reranking), `"retrieve_fallback_n": 8`, `"final_context_top_k": 12`, `"use_reranker": true`, `"expand_on_not_found": true`, and follow-up controls `"include_follow_up_questions": true` (default), `"follow_up_candidates": 8` (3–12), `"follow_up_final": 3` (must be `<= follow_up_candidates`). Defaults also come from `.env` (`RERANK_TOP_N`, `RERANK_RETURN_TOP_K`, `RETRIEVE_FALLBACK_N`, `FINAL_CONTEXT_TOP_K`).
 

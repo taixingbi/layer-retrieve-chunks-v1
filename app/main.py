@@ -110,6 +110,9 @@ def _answer_payload(
     latency_ms: dict[str, int],
     retrieval_hits: list[dict],
     include_retrieval_hits: bool,
+    request_id: str,
+    session_id: str,
+    trace_id: str | None,
     conversation_id: str,
 ) -> dict[str, Any]:
     """Build stable HTTP/MCP response payload (conditionally including retrieval_hits)."""
@@ -118,6 +121,9 @@ def _answer_payload(
         "citations": citations,
         "follow_up_questions": follow_up_questions,
         "latency_ms": latency_ms,
+        "request_id": request_id,
+        "session_id": session_id,
+        "trace_id": trace_id,
         "conversation_id": conversation_id,
     }
     if include_retrieval_hits:
@@ -167,6 +173,9 @@ async def answer_from_inference_payload_async(
         latency_ms=latency_ms,
         retrieval_hits=retrieval_hits,
         include_retrieval_hits=wants_hits,
+        request_id=request_id,
+        session_id=session_id,
+        trace_id=trace_id,
         conversation_id=conversation_id,
     )
 
@@ -267,6 +276,9 @@ def answer_from_inference(
         latency_ms=latency_ms,
         retrieval_hits=retrieval_hits,
         include_retrieval_hits=wants_hits,
+        request_id=request_id,
+        session_id=session_id,
+        trace_id=None,
         conversation_id=conv,
     )
 
@@ -292,7 +304,8 @@ async def answer_from_inference_http(request: Request) -> JSONResponse:
     Optional JSON field ``conversation_id`` threads the chat turn through the inference
     gateway (same contract as ``layer-gateway-inference-v1``): forwarded on every
     ``/v1/chat/completions`` body; omitted or blank values get a server-generated
-    ``conv_<hex>`` id, echoed as ``X-Conversation-Id`` and in the JSON response.
+    ``conv_<hex>`` id, echoed as ``X-Conversation-Id`` and in the JSON response
+  (along with ``request_id``, ``session_id``, and ``trace_id`` in the body).
     """
     method = request.method
     path = request.url.path

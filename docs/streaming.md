@@ -44,7 +44,7 @@ The HTTP status is locked at **200** as soon as headers flush. Errors that occur
 
 | Event | Payload | When |
 |-------|---------|------|
-| `meta` | `{"request_id","session_id","trace_id","user_id","collection","k","k_max"}` | First frame, before any work. `user_id` mirrors the `X-User-Id` header (default `"-"`). |
+| `meta` | `{"request_id","session_id","trace_id","user_id","conversation_id","collection","k","k_max"}` | First frame, before any work. `user_id` mirrors the `X-User-Id` header (default `"-"`). `trace_id` is JSON `null` when `X-Trace-Id` was omitted. |
 | `latency` | `{"phase","ms"}` | Once per phase: `embed`, `retrieve`, `chunk_rerank`, `chat`, `follow_up_chat`, `follow_up_rerank`, `total`. |
 | `retrieval_widen` | `{"reason","prev_k","next_k"}` | Emitted **before** a retry when the model returned empty or exactly `NOT_FOUND` and we widen the context slice (`expand_on_not_found`). `reason` is currently always `"not_found"`. Not sent when the first chat attempt already succeeds. |
 | `answer_start` | `{}` | Immediately before the first user-visible `answer_delta` for this turn. After any `retrieval_widen` events; clients can reset their answer buffer here. |

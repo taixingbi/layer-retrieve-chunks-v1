@@ -66,7 +66,7 @@ curl -sS -X POST http://127.0.0.1:8000/v1/rag/query \
 
 ## RAG query — default response
 
-`answer`, `citations`, `follow_up_questions`, `latency_ms`. With explicit correlation (recommended behind gateways). On **200** responses, `X-Request-Id`, `X-Session-Id`, and `X-Trace-Id` (when sent) are echoed on the response.
+`answer`, `citations`, `follow_up_questions`, `latency_ms`, plus `request_id`, `session_id`, `trace_id` (JSON `null` when `X-Trace-Id` was omitted), and `conversation_id` (from JSON body or server-generated `conv_<hex>`). With explicit correlation (recommended behind gateways). On **200** responses, the same ids are also echoed as `X-Request-Id`, `X-Session-Id`, `X-Trace-Id` (when sent), and `X-Conversation-Id`.
 
 ```bash
 curl -sS -X POST http://127.0.0.1:8000/v1/rag/query \
