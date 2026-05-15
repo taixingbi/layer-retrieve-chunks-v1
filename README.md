@@ -199,7 +199,7 @@ curl -sS -X POST http://127.0.0.1:8000/v1/rag/query \
   }'
 ```
 
-See also [`docs/streaming.md`](docs/streaming.md), [`docs/access-control.md`](docs/access-control.md), [`docs/smoke-tests.md`](docs/smoke-tests.md), [`docs/follow-up-questions.md`](docs/follow-up-questions.md), and [`docs/log-json-schema.md`](docs/log-json-schema.md).
+See also [`docs/schema.md`](docs/schema.md) (request/response fields), [`docs/streaming.md`](docs/streaming.md), [`docs/access-control.md`](docs/access-control.md), [`docs/smoke-tests.md`](docs/smoke-tests.md), [`docs/follow-up-questions.md`](docs/follow-up-questions.md), and [`docs/log-json-schema.md`](docs/log-json-schema.md).
 
 **Cursor** (`.cursor/mcp.json` or global MCP settings): point the server at the repo root so `.env` resolves; use your venv’s `python` if needed:
 

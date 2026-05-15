@@ -2,6 +2,8 @@
 
 Reference list of every HTTP endpoint exposed by **layer-rag-query** plus the upstream services it calls. Use these to verify each dependency end-to-end without writing Python.
 
+Field-level request/response contract: [schema.md](schema.md).
+
 All snippets assume a `.env` at the repo root (see [README.md](../README.md#configuration)). Load it once per shell:
 
 ```bash
